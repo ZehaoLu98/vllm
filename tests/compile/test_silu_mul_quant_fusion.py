@@ -28,13 +28,13 @@ from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.quantization.kernels.scaled_mm.cutlass import (
     CutlassFP8ScaledMMLinearKernel,
 )
-from vllm.model_executor.layers.quantization.kernels.scaled_mm.flashinfer import (
+from vllm_.model_executor.layers.quantization.kernels.scaled_mm.flashinfer import (
     FlashInferFP8ScaledMMLinearKernel,
 )
-from vllm.model_executor.layers.quantization.kernels.scaled_mm.pytorch import (
+from vllm_.model_executor.layers.quantization.kernels.scaled_mm.pytorch import (
     PerTensorTorchFP8ScaledMMLinearKernel,
 )
-from vllm.model_executor.layers.quantization.kernels.scaled_mm.rocm import (
+from vllm_.model_executor.layers.quantization.kernels.scaled_mm.rocm import (
     ROCmFP8ScaledMMLinearKernel,
 )
 from vllm.model_executor.layers.quantization.kernels.scaled_mm.ScaledMMLinearKernel import (  # noqa: E501

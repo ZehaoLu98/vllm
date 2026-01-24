@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from vllm.entrypoints.renderer import CompletionRenderer
-from vllm.multimodal.media import AudioEmbeddingMediaIO, ImageEmbeddingMediaIO
+from vllm_.multimodal.media import AudioEmbeddingMediaIO, ImageEmbeddingMediaIO
 
 
 def _encode_tensor(tensor: torch.Tensor) -> bytes:

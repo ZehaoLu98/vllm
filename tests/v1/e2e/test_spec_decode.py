@@ -18,7 +18,7 @@ from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.engine.arg_utils import EngineArgs
 from vllm.platforms import current_platform
 from vllm.v1.metrics.reader import Metric
-from vllm.v1.spec_decode.draft_model import (
+from vllm_.v1.spec_decode.draft_model import (
     create_vllm_config_for_draft_model,
     merge_toks_kernel,
 )

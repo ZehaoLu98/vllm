@@ -16,7 +16,7 @@ from openai.types.responses.response_reasoning_item import (
 )
 
 from vllm.entrypoints.constants import MCP_PREFIX
-from vllm.entrypoints.openai.responses.utils import (
+from vllm_.entrypoints.openai.responses.utils import (
     _construct_single_message_from_response_item,
     _maybe_combine_reasoning_and_tool_call,
     construct_chat_messages_with_tool_call,

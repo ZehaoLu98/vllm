@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from vllm.multimodal.media import AudioMediaIO
+from vllm_.multimodal.media import AudioMediaIO
 
 pytestmark = pytest.mark.cpu_test
 

@@ -4,13 +4,13 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from vllm.entrypoints.openai.chat_completion.protocol import (
+from vllm_.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionResponse,
     ChatCompletionResponseChoice,
     ChatCompletionStreamResponse,
     ChatMessage,
 )
-from vllm.entrypoints.openai.engine.protocol import (
+from vllm_.entrypoints.openai.engine.protocol import (
     UsageInfo,
 )
 

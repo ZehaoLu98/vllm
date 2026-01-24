@@ -19,7 +19,7 @@ from tests.v1.attention.utils import (
 )
 from vllm import _custom_ops as ops
 from vllm.config.vllm import set_current_vllm_config
-from vllm.model_executor.layers.attention.mla_attention import QueryLenSupport
+from vllm_.model_executor.layers.attention.mla_attention import QueryLenSupport
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.utils.math_utils import cdiv
 from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE

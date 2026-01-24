@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from vllm.config.multimodal import MultiModalConfig
-from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse
-from vllm.entrypoints.openai.models.protocol import BaseModelPath
-from vllm.entrypoints.openai.models.serving import OpenAIServingModels
+from vllm_.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+from vllm_.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+from vllm_.entrypoints.openai.engine.protocol import ErrorResponse
+from vllm_.entrypoints.openai.models.protocol import BaseModelPath
+from vllm_.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.outputs import CompletionOutput, RequestOutput
 from vllm.tokenizers import get_tokenizer
 from vllm.v1.engine.async_llm import AsyncLLM

@@ -14,7 +14,7 @@ from openai_harmony import (
     load_harmony_encoding,
 )
 
-from vllm.entrypoints.openai.engine.protocol import FunctionCall, ToolCall
+from vllm_.entrypoints.openai.engine.protocol import FunctionCall, ToolCall
 from vllm.tokenizers import get_tokenizer
 from vllm.tool_parsers.openai_tool_parser import OpenAIToolParser
 

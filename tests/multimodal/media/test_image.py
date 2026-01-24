@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from vllm.multimodal.media import ImageMediaIO
+from vllm_.multimodal.media import ImageMediaIO
 
 pytestmark = pytest.mark.cpu_test
 

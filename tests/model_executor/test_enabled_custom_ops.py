@@ -17,7 +17,7 @@ from vllm.model_executor.layers.activation import (
     ReLUSquaredActivation,
     SiluAndMul,
 )
-from vllm.model_executor.layers.fused_moe.router.fused_topk_router import (
+from vllm_.model_executor.layers.fused_moe.router.fused_topk_router import (
     dispatch_topk_func,
     vllm_topk_softmax,
 )

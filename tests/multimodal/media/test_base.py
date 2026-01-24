@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from vllm.multimodal.media import MediaWithBytes
+from vllm_.multimodal.media import MediaWithBytes
 
 pytestmark = pytest.mark.cpu_test
 

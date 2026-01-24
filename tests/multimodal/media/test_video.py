@@ -9,7 +9,7 @@ from PIL import Image
 
 from vllm.assets.base import get_vllm_public_assets
 from vllm.assets.video import video_to_ndarrays, video_to_pil_images_list
-from vllm.multimodal.media import ImageMediaIO, VideoMediaIO
+from vllm_.multimodal.media import ImageMediaIO, VideoMediaIO
 from vllm.multimodal.video import VIDEO_LOADER_REGISTRY, VideoLoader
 
 from ..utils import cosine_similarity, create_video_from_image, normalize_image

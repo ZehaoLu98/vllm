@@ -11,16 +11,16 @@ from vllm import SamplingParams
 from vllm.assets.image import ImageAsset
 from vllm.config import VllmConfig
 from vllm.engine.arg_utils import AsyncEngineArgs
-from vllm.entrypoints.openai.chat_completion.protocol import (
+from vllm_.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
-from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
-from vllm.entrypoints.openai.engine.protocol import (
+from vllm_.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+from vllm_.entrypoints.openai.engine.protocol import (
     ErrorResponse,
 )
-from vllm.entrypoints.openai.models.protocol import BaseModelPath
-from vllm.entrypoints.openai.models.serving import OpenAIServingModels
+from vllm_.entrypoints.openai.models.protocol import BaseModelPath
+from vllm_.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.inputs import PromptType
 from vllm.outputs import RequestOutput
 from vllm.platforms import current_platform
