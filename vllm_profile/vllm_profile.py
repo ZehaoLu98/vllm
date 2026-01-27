@@ -5,7 +5,7 @@ import time
 
 from vllm import LLM, SamplingParams
 
-enable_builtin_profiling = True
+enable_builtin_profiling = False
 
 # Sample prompts.
 prompts = [
@@ -32,8 +32,8 @@ def main():
 
     # Create an LLM.
     llm = LLM(
-        model="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
-        tensor_parallel_size=1,
+        model="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+        tensor_parallel_size=2,
         profiler_config=profiler_config,
     )
 
