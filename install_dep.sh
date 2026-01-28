@@ -10,6 +10,7 @@ sudo dpkg -i NsightSystems-linux-cli-public-2026.1.1.204-3717666.deb
 
 
 # Reload NVIDIA drivers to enable profiling for all users
+sudo systemctl isolate multi-user
 sudo modprobe -rf nvidia_peermem
 sudo modprobe -rf nvidia_drm nvidia_modeset nvidia
 sudo modprobe nvidia NVreg_RestrictProfilingToAdminUsers=0
