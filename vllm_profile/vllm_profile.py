@@ -10,12 +10,9 @@ enable_builtin_profiling = False
 # Sample prompts.
 prompts = [
     "Hello, my name is",
-    "The president of the United States is",
-    "The capital of France is",
-    "The future of AI is",
 ]
 # Create a sampling params object.
-sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=512)
 
 
 def main():
@@ -32,9 +29,12 @@ def main():
 
     # Create an LLM.
     llm = LLM(
-        model="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-        tensor_parallel_size=2,
+        model="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+        tensor_parallel_size=1,
         profiler_config=profiler_config,
+        enable_layerwise_nvtx_tracing=True,
+        kv_cache_metrics=True,
+        enforce_eager=True,
     )
 
     if enable_builtin_profiling:
