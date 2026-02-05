@@ -2928,6 +2928,19 @@ class GPUModelRunner(
             **model_kwargs,
         )
 
+    def _is_pure_prefill(self, num_reqs: int) -> bool:
+        """
+        Checks if this is a pure prefill batch (all requests are processing
+        their first tokens, none have been computed yet).
+        """
+        if num_reqs == 0:
+            return False
+        # Check if all requests have zero computed tokens
+        return all(
+            self.input_batch.num_computed_tokens_cpu[i] == 0
+            for i in range(num_reqs)
+        )
+
     @staticmethod
     def _is_uniform_decode(
         max_num_scheduled_tokens: int,
@@ -3283,6 +3296,22 @@ class GPUModelRunner(
 
         # Run the model.
         # Use persistent buffers for CUDA graphs.
+        # Determine batch type for NVTX annotation
+        is_pure_prefill = self._is_pure_prefill(num_reqs)
+        uniform_decode = self._is_uniform_decode(
+            max_num_scheduled_tokens=max_num_scheduled_tokens,
+            uniform_decode_query_len=self.uniform_decode_query_len,
+            num_tokens=num_tokens_unpadded,
+            num_reqs=num_reqs,
+        )
+        
+        if is_pure_prefill:
+            batch_type_label = f"PREFILL ({num_reqs} reqs, {num_tokens_unpadded} tokens)"
+        elif uniform_decode:
+            batch_type_label = f"DECODE ({num_reqs} reqs, {num_tokens_unpadded} tokens)"
+        else:
+            batch_type_label = f"MIXED ({num_reqs} reqs, {num_tokens_unpadded} tokens)"
+        
         with (
             set_forward_context(
                 attn_metadata,
@@ -3294,7 +3323,7 @@ class GPUModelRunner(
                 ubatch_slices=ubatch_slices_padded,
                 skip_compiled=has_encoder_input,
             ),
-            record_function_or_nullcontext("gpu_model_runner: forward"),
+            record_function_or_nullcontext(f"gpu_model_runner: forward [{batch_type_label}]"),
             self.maybe_get_kv_connector_output(scheduler_output) as kv_connector_output,
         ):
             model_output = self._model_forward(
