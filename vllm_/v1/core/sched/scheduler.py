@@ -801,8 +801,41 @@ class Scheduler(SchedulerInterface):
             )
             scheduler_output.ec_connector_metadata = ec_meta
 
-        with record_function_or_nullcontext("schedule: update_after_schedule"):
-            self._update_after_schedule(scheduler_output)
+        # NVTX annotation for profiling: categorize scheduled requests
+        # into prefill vs decode based on num_computed_tokens
+        prefill_req_ids: list[str] = []
+        decode_req_ids: list[str] = []
+        for req_id in num_scheduled_tokens:
+            request = self.requests.get(req_id)
+            if request is not None:
+                # A request is in prefill if it hasn't finished processing
+                # all prompt tokens yet
+                if request.num_computed_tokens < request.num_prompt_tokens:
+                    prefill_req_ids.append(req_id)
+                else:
+                    decode_req_ids.append(req_id)
+
+        num_prefill = len(prefill_req_ids)
+        num_decode = len(decode_req_ids)
+        if num_prefill > 0 and num_decode > 0:
+            batch_type = "MIXED_TYPE"
+        elif num_prefill > 0:
+            batch_type = "PREFILL_TYPE"
+        elif num_decode > 0:
+            batch_type = "DECODE_TYPE"
+        else:
+            batch_type = "EMPTY_TYPE"
+
+        # Build annotation with batch type and request IDs
+        nvtx_label = (
+            f"schedule: {batch_type} "
+            f"(prefill={num_prefill}: {prefill_req_ids}, "
+            f"decode={num_decode}: {decode_req_ids}, "
+            f"tokens={total_num_scheduled_tokens})"
+        )
+
+        with record_function_or_nullcontext(nvtx_label):
+                self._update_after_schedule(scheduler_output)
         return scheduler_output
 
     def _preempt_request(self, request: Request, timestamp: float) -> None:
