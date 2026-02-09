@@ -18,3 +18,6 @@ sudo systemctl isolate graphical
 
 nsys profile --cuda-memory-usage --gpu-metrics-devices=help
 nsys profile --cuda-memory-usage true  --gpu-metrics-devices all --trace-fork-before-exec true  python ./vllm_profile/vllm_profile.py
+
+# Set environment variable for detailed NVTX labeling in nsys
+export VLLM_NVTX_SCOPES_FOR_PROFILING=1
