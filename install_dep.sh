@@ -32,3 +32,5 @@ nsys profile --cuda-memory-usage true  --gpu-metrics-devices all --trace-fork-be
 
 # Set environment variable for detailed NVTX labeling in nsys
 export VLLM_NVTX_SCOPES_FOR_PROFILING=1
+# install nvtx
+uv pip install nvtx
