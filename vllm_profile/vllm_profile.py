@@ -77,7 +77,7 @@ prompts = [
 ]
 
 # Create a sampling params object.
-sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=512)
+sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=256)
 
 
 def parse_args():
@@ -209,8 +209,8 @@ def main():
 
     # Create an LLM with SchedulerConfig parameters
     llm = LLM(
-        model="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-        tensor_parallel_size=2,
+        model="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        tensor_parallel_size=1,
         pipeline_parallel_size=1,
         profiler_config=profiler_config,
         enable_layerwise_nvtx_tracing=True,
@@ -230,6 +230,7 @@ def main():
         disable_hybrid_kv_cache_manager=args.disable_hybrid_kv_cache_manager,
         async_scheduling=args.async_scheduling,
         stream_interval=args.stream_interval,
+        disable_log_stats=False,
     )
 
     if enable_builtin_profiling:
@@ -247,24 +248,11 @@ def main():
     tpots = []
 
     for output in outputs:
-        if hasattr(output, 'metrics') and output.metrics is not None:
-            # Time to first token
-            if hasattr(output.metrics, 'first_token_time') and output.metrics.first_token_time is not None:
-                ttft = output.metrics.first_token_time
-                ttfts.append(ttft)
-
-            # Time per output token (TPOT)
-            # Calculate as: (total_time - first_token_time) / (num_tokens - 1)
-            if (hasattr(output.metrics, 'finished_time') and output.metrics.finished_time is not None and
-                hasattr(output.metrics, 'first_scheduled_time') and output.metrics.first_scheduled_time is not None and
-                hasattr(output.metrics, 'first_token_time') and output.metrics.first_token_time is not None):
-
-                num_tokens = len(output.outputs[0].token_ids) if hasattr(output.outputs[0], 'token_ids') else 0
-                if num_tokens > 1:
-                    total_time = output.metrics.finished_time - output.metrics.first_scheduled_time
-                    decode_time = total_time - output.metrics.first_token_time
-                    tpot = decode_time / (num_tokens - 1)
-                    tpots.append(tpot)
+        ttft = output.metrics.first_token_latency
+        ttfts.append(ttft)
+        decode_time = output.metrics.last_token_ts - output.metrics.first_token_ts
+        tpot = decode_time / (output.metrics.num_generation_tokens - 1)
+        tpots.append(tpot)
 
     # Print the outputs.
     print("-" * 50)
