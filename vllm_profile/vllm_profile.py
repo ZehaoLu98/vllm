@@ -242,6 +242,30 @@ def main():
     if enable_builtin_profiling:
         llm.stop_profile()
 
+    # Calculate metrics
+    ttfts = []
+    tpots = []
+
+    for output in outputs:
+        if hasattr(output, 'metrics') and output.metrics is not None:
+            # Time to first token
+            if hasattr(output.metrics, 'first_token_time') and output.metrics.first_token_time is not None:
+                ttft = output.metrics.first_token_time
+                ttfts.append(ttft)
+
+            # Time per output token (TPOT)
+            # Calculate as: (total_time - first_token_time) / (num_tokens - 1)
+            if (hasattr(output.metrics, 'finished_time') and output.metrics.finished_time is not None and
+                hasattr(output.metrics, 'first_scheduled_time') and output.metrics.first_scheduled_time is not None and
+                hasattr(output.metrics, 'first_token_time') and output.metrics.first_token_time is not None):
+
+                num_tokens = len(output.outputs[0].token_ids) if hasattr(output.outputs[0], 'token_ids') else 0
+                if num_tokens > 1:
+                    total_time = output.metrics.finished_time - output.metrics.first_scheduled_time
+                    decode_time = total_time - output.metrics.first_token_time
+                    tpot = decode_time / (num_tokens - 1)
+                    tpots.append(tpot)
+
     # Print the outputs.
     print("-" * 50)
     for output in outputs:
@@ -249,6 +273,32 @@ def main():
         generated_text = output.outputs[0].text
         print(f"Prompt: {prompt!r}\nGenerated text: {generated_text!r}")
         print("-" * 50)
+
+    # Print performance metrics
+    print("\n" + "=" * 80)
+    print("Performance Metrics:")
+    print("=" * 80)
+
+    if ttfts:
+        print(f"\nTime To First Token (TTFT):")
+        print(f"  Average: {sum(ttfts) / len(ttfts):.4f} seconds")
+        print(f"  Mean:    {sum(ttfts) / len(ttfts):.4f} seconds")
+        print(f"  Min:     {min(ttfts):.4f} seconds")
+        print(f"  Max:     {max(ttfts):.4f} seconds")
+    else:
+        print(f"\nTime To First Token (TTFT): No data available")
+
+    if tpots:
+        print(f"\nTime Per Output Token (TPOT):")
+        print(f"  Average: {sum(tpots) / len(tpots):.4f} seconds")
+        print(f"  Mean:    {sum(tpots) / len(tpots):.4f} seconds")
+        print(f"  Min:     {min(tpots):.4f} seconds")
+        print(f"  Max:     {max(tpots):.4f} seconds")
+    else:
+        print(f"\nTime Per Output Token (TPOT): No data available")
+
+    print("=" * 80)
+    print()
 
     # Add a buffer to wait for profiler in the background process
     # (in case MP is on) to finish writing profiling output.
