@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import argparse
 import time
 
 from vllm import LLM, SamplingParams
@@ -74,11 +75,127 @@ prompts = [
     """Develop a comprehensive guide to implementing gating and switch mechanisms in mixture-of-experts (MoE) architectures. Start by explaining mixture-of-experts: routing each token to subset of expert modules for selective computation. Discuss the gating mechanism: computing routing weights determining which experts process which tokens. Detail top-k gating: selecting k experts per token based on scores. Explain the computational pattern: computing similarity scores, selecting top k efficiently. Discuss load balancing: ensuring experts receive similar number of tokens. Cover auxiliary loss: penalizing unbalanced routing during training. Explain the kernel implementation: assigning tokens to experts, reshuffling data efficiently. Detail expert dispatch: collecting tokens going to each expert. Discuss the challenge: irregular workloads (some experts busy, others idle). Include dispatch patterns optimizing for CUDA execution.""",
     """Explain the complete process of implementing RoPE (Rotary Position Embeddings) computation. Start by explaining RoPE: encoding position information via rotation of Q, K vectors. Discuss advantages: length generalization (relative position matters), compatibility with long sequences. Detail the mathematical operation: applying rotation matrices to high-dimensional vectors. Explain the computational pattern: rotating pairs of dimensions achievable efficiently. Discuss the kernel implementation: threads compute rotations for individual dimension pairs. Cover memory layout: organizing Q, K for efficient rotation computation. Explain vectorization: processing multiple dimension pairs per thread. Detail fused RoPE + attention: computing rotation and attention in same kernel. Discuss numerical stability: ensuring rotation matrices remain orthogonal despite precision.""",
 ]
+
 # Create a sampling params object.
 sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=512)
 
 
+def parse_args():
+    """Parse command line arguments for SchedulerConfig parameters."""
+    parser = argparse.ArgumentParser(description="vLLM profiling script with SchedulerConfig options")
+
+    # SchedulerConfig parameters
+    parser.add_argument(
+        "--max_num_batched_tokens",
+        type=str,
+        default=None,
+        help="Maximum number of tokens to be processed in a single iteration. Supports human-readable format like '1k', '2M'."
+    )
+
+    parser.add_argument(
+        "--max_num_seqs",
+        type=int,
+        default=None,
+        help="Maximum number of sequences to be processed in a single iteration."
+    )
+
+    parser.add_argument(
+        "--max_num_partial_prefills",
+        type=int,
+        default=1,
+        help="For chunked prefill, the maximum number of sequences that can be partially prefilled concurrently."
+    )
+
+    parser.add_argument(
+        "--max_long_partial_prefills",
+        type=int,
+        default=1,
+        help="For chunked prefill, the maximum number of prompts longer than long_prefill_token_threshold that will be prefilled concurrently."
+    )
+
+    parser.add_argument(
+        "--long_prefill_token_threshold",
+        type=int,
+        default=0,
+        help="For chunked prefill, a request is considered long if the prompt is longer than this number of tokens."
+    )
+
+    parser.add_argument(
+        "--scheduling_policy",
+        type=str,
+        default="fcfs",
+        choices=["fcfs", "priority"],
+        help="The scheduling policy to use: 'fcfs' (first come first served) or 'priority' (based on given priority)."
+    )
+
+    parser.add_argument(
+        "--enable_chunked_prefill",
+        type=lambda x: None if x.lower() == 'none' else x.lower() == 'true',
+        default=True,
+        help="If True, prefill requests can be chunked based on the remaining max_num_batched_tokens. (true/false/none)"
+    )
+
+    parser.add_argument(
+        "--disable_chunked_mm_input",
+        action="store_true",
+        default=False,
+        help="If set, do not partially schedule multimodal items when chunked prefill is enabled."
+    )
+
+    parser.add_argument(
+        "--scheduler_cls",
+        type=str,
+        default=None,
+        help="The scheduler class to use. Can be a class directly or the path to a class of form 'mod.custom_class'."
+    )
+
+    parser.add_argument(
+        "--disable_hybrid_kv_cache_manager",
+        type=lambda x: None if x.lower() == 'none' else x.lower() == 'true',
+        default=None,
+        help="If True, KV cache manager will allocate the same size for all attention layers. (true/false/none)"
+    )
+
+    parser.add_argument(
+        "--async_scheduling",
+        type=lambda x: None if x.lower() == 'none' else x.lower() == 'true',
+        default=None,
+        help="If False, disable async scheduling. Async scheduling helps avoid gaps in GPU utilization. (true/false/none)"
+    )
+
+    parser.add_argument(
+        "--stream_interval",
+        type=int,
+        default=1,
+        help="The interval (or buffer size) for streaming in terms of token length."
+    )
+
+    return parser.parse_args()
+
+
 def main():
+    # Parse command line arguments
+    args = parse_args()
+
+    # Print all argument settings
+    print("=" * 80)
+    print("SchedulerConfig Parameters:")
+    print("=" * 80)
+    print(f"  max_num_batched_tokens: {args.max_num_batched_tokens}")
+    print(f"  max_num_seqs: {args.max_num_seqs}")
+    print(f"  max_num_partial_prefills: {args.max_num_partial_prefills}")
+    print(f"  max_long_partial_prefills: {args.max_long_partial_prefills}")
+    print(f"  long_prefill_token_threshold: {args.long_prefill_token_threshold}")
+    print(f"  scheduling_policy: {args.scheduling_policy}")
+    print(f"  enable_chunked_prefill: {args.enable_chunked_prefill}")
+    print(f"  disable_chunked_mm_input: {args.disable_chunked_mm_input}")
+    print(f"  scheduler_cls: {args.scheduler_cls}")
+    print(f"  disable_hybrid_kv_cache_manager: {args.disable_hybrid_kv_cache_manager}")
+    print(f"  async_scheduling: {args.async_scheduling}")
+    print(f"  stream_interval: {args.stream_interval}")
+    print("=" * 80)
+    print()
+
     if enable_builtin_profiling:
         profiler_config = dict(
             profiler="torch",
@@ -90,7 +207,7 @@ def main():
     else:
         profiler_config = None
 
-    # Create an LLM.
+    # Create an LLM with SchedulerConfig parameters
     llm = LLM(
         model="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
         tensor_parallel_size=2,
@@ -99,8 +216,20 @@ def main():
         enable_layerwise_nvtx_tracing=True,
         kv_cache_metrics=True,
         enforce_eager=True,
-        max_num_seqs=8,
+        max_num_seqs=args.max_num_seqs,
         enable_prefix_caching=False,
+        # SchedulerConfig parameters
+        max_num_batched_tokens=args.max_num_batched_tokens,
+        max_num_partial_prefills=args.max_num_partial_prefills,
+        max_long_partial_prefills=args.max_long_partial_prefills,
+        long_prefill_token_threshold=args.long_prefill_token_threshold,
+        scheduling_policy=args.scheduling_policy,
+        enable_chunked_prefill=args.enable_chunked_prefill,
+        disable_chunked_mm_input=args.disable_chunked_mm_input,
+        scheduler_cls=args.scheduler_cls,
+        disable_hybrid_kv_cache_manager=args.disable_hybrid_kv_cache_manager,
+        async_scheduling=args.async_scheduling,
+        stream_interval=args.stream_interval,
     )
 
     if enable_builtin_profiling:
