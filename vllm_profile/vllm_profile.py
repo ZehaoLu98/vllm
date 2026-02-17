@@ -19,6 +19,51 @@ prompts = load_prompts(prompts_file)
 sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=512)
 
 
+def parse_human_readable_int(value):
+    """Convert human-readable integer strings to actual integers.
+    
+    Supports:
+    - '8k' or '8K' -> 8192 (8 * 1024)
+    - '2m' or '2M' -> 2097152 (2 * 1024 * 1024)
+    - '1024' -> 1024 (plain integers)
+    
+    Args:
+        value: String or int value to convert
+        
+    Returns:
+        Integer value or None if input is None
+    """
+    if value is None:
+        return None
+    
+    if isinstance(value, int):
+        return value
+    
+    value_str = str(value).strip()
+    
+    # Check for 'k' or 'K' suffix (multiply by 1024)
+    if value_str.lower().endswith('k'):
+        try:
+            num = float(value_str[:-1])
+            return int(num * 1024)
+        except ValueError:
+            raise ValueError(f"Invalid format: {value}")
+    
+    # Check for 'm' or 'M' suffix (multiply by 1024*1024)
+    if value_str.lower().endswith('m'):
+        try:
+            num = float(value_str[:-1])
+            return int(num * 1024 * 1024)
+        except ValueError:
+            raise ValueError(f"Invalid format: {value}")
+    
+    # Plain integer
+    try:
+        return int(value_str)
+    except ValueError:
+        raise ValueError(f"Invalid integer format: {value}")
+
+
 def parse_args():
     """Parse command line arguments for SchedulerConfig parameters."""
     parser = argparse.ArgumentParser(description="vLLM profiling script with SchedulerConfig options")
@@ -115,12 +160,15 @@ def parse_args():
 def main():
     # Parse command line arguments
     args = parse_args()
+    
+    # Convert human-readable format to integers
+    max_num_batched_tokens_int = parse_human_readable_int(args.max_num_batched_tokens)
 
     # Print all argument settings
     print("=" * 80)
     print("SchedulerConfig Parameters:")
     print("=" * 80)
-    print(f"  max_num_batched_tokens: {args.max_num_batched_tokens}")
+    print(f"  max_num_batched_tokens: {args.max_num_batched_tokens} -> {max_num_batched_tokens_int}")
     print(f"  max_num_seqs: {args.max_num_seqs}")
     print(f"  max_num_partial_prefills: {args.max_num_partial_prefills}")
     print(f"  max_long_partial_prefills: {args.max_long_partial_prefills}")
@@ -158,7 +206,7 @@ def main():
         max_num_seqs=args.max_num_seqs,
         enable_prefix_caching=False,
         # SchedulerConfig parameters
-        max_num_batched_tokens=args.max_num_batched_tokens,
+        max_num_batched_tokens=max_num_batched_tokens_int,
         max_num_partial_prefills=args.max_num_partial_prefills,
         max_long_partial_prefills=args.max_long_partial_prefills,
         long_prefill_token_threshold=args.long_prefill_token_threshold,
