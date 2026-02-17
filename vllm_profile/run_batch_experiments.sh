@@ -5,7 +5,11 @@
 # Bash script to run vllm_profile with multiple batch sizes
 
 # Define batch sizes array (max_num_seqs values)
-BATCH_SIZES=(2 4 8 16 32)
+BATCH_SIZES=(1024)
+
+# Define max_num_batched_tokens configurations
+# Values can be integers or suffixed strings like "32k"
+MAX_NUM_BATCHED_TOKENS_CONFIGS=("8k" "12k" "16k" "32k" "64k" "128k" "256k" "512k" "1024k")
 
 # Output directory for logs
 OUTPUT_DIR="./experiment_results"
@@ -21,14 +25,12 @@ echo "Starting batch size experiments"
 echo "Timestamp: $TIMESTAMP"
 echo "Output directory: $EXPERIMENT_DIR"
 echo "Batch sizes: ${BATCH_SIZES[@]}"
+echo "MAX_NUM_BATCHED_TOKENS configs: ${MAX_NUM_BATCHED_TOKENS_CONFIGS[@]}"
 echo "=========================================="
 echo ""
 
 # Optional: Additional scheduler config parameters
 # Uncomment and modify as needed
-
-# Maximum number of tokens to be processed in a single iteration
-# MAX_NUM_BATCHED_TOKENS="32k"
 
 # Maximum number of sequences that can be partially prefilled concurrently
 # MAX_NUM_PARTIAL_PREFILLS=1
@@ -43,7 +45,7 @@ echo ""
 # SCHEDULING_POLICY="fcfs"
 
 # Enable chunked prefill: "true", "false", or "none"
-# ENABLE_CHUNKED_PREFILL="true"
+ENABLE_CHUNKED_PREFILL="true"
 
 # Disable chunked multimodal input (flag, set to "true" to enable)
 # DISABLE_CHUNKED_MM_INPUT="true"
@@ -63,82 +65,91 @@ echo ""
 # Loop through each batch size
 for batch_size in "${BATCH_SIZES[@]}"; do
     echo "=========================================="
-    echo "Running experiment with batch_size=$batch_size"
+    echo "Running experiments with batch_size=$batch_size"
     echo "=========================================="
+    echo ""
 
-    # Create output file for this run
-    OUTPUT_FILE="$EXPERIMENT_DIR/batch_${batch_size}_output.log"
+    # Loop through each MAX_NUM_BATCHED_TOKENS configuration
+    for max_batched_tokens in "${MAX_NUM_BATCHED_TOKENS_CONFIGS[@]}"; do
+        echo "------------------------------------------"
+        echo "Running: batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens"
+        echo "------------------------------------------"
 
-    # Build the command
-    CMD="python vllm_profile.py --max_num_seqs $batch_size"
+        # Create output file for this run (sanitize max_batched_tokens for filename)
+        SANITIZED_TOKENS=$(echo "$max_batched_tokens" | tr -d ' /')
+        OUTPUT_FILE="$EXPERIMENT_DIR/batch_${batch_size}_tokens_${SANITIZED_TOKENS}_output.log"
 
-    # Add optional parameters if defined
-    if [ ! -z "$MAX_NUM_BATCHED_TOKENS" ]; then
-        CMD="$CMD --max_num_batched_tokens $MAX_NUM_BATCHED_TOKENS"
-    fi
+        # Build the command
+        CMD="python vllm_profile.py --max_num_seqs $batch_size"
 
-    if [ ! -z "$MAX_NUM_PARTIAL_PREFILLS" ]; then
-        CMD="$CMD --max_num_partial_prefills $MAX_NUM_PARTIAL_PREFILLS"
-    fi
+        # Add max_num_batched_tokens parameter
+        CMD="$CMD --max_num_batched_tokens $max_batched_tokens"
 
-    if [ ! -z "$MAX_LONG_PARTIAL_PREFILLS" ]; then
-        CMD="$CMD --max_long_partial_prefills $MAX_LONG_PARTIAL_PREFILLS"
-    fi
-
-    if [ ! -z "$LONG_PREFILL_TOKEN_THRESHOLD" ]; then
-        CMD="$CMD --long_prefill_token_threshold $LONG_PREFILL_TOKEN_THRESHOLD"
-    fi
-
-    if [ ! -z "$SCHEDULING_POLICY" ]; then
-        CMD="$CMD --scheduling_policy $SCHEDULING_POLICY"
-    fi
-
-    if [ ! -z "$ENABLE_CHUNKED_PREFILL" ]; then
-        CMD="$CMD --enable_chunked_prefill $ENABLE_CHUNKED_PREFILL"
-    fi
-
-    if [ ! -z "$DISABLE_CHUNKED_MM_INPUT" ]; then
-        if [ "$DISABLE_CHUNKED_MM_INPUT" = "true" ]; then
-            CMD="$CMD --disable_chunked_mm_input"
+        # Add optional parameters if defined
+        if [ ! -z "$MAX_NUM_PARTIAL_PREFILLS" ]; then
+            CMD="$CMD --max_num_partial_prefills $MAX_NUM_PARTIAL_PREFILLS"
         fi
-    fi
 
-    if [ ! -z "$SCHEDULER_CLS" ]; then
-        CMD="$CMD --scheduler_cls $SCHEDULER_CLS"
-    fi
+        if [ ! -z "$MAX_LONG_PARTIAL_PREFILLS" ]; then
+            CMD="$CMD --max_long_partial_prefills $MAX_LONG_PARTIAL_PREFILLS"
+        fi
 
-    if [ ! -z "$DISABLE_HYBRID_KV_CACHE_MANAGER" ]; then
-        CMD="$CMD --disable_hybrid_kv_cache_manager $DISABLE_HYBRID_KV_CACHE_MANAGER"
-    fi
+        if [ ! -z "$LONG_PREFILL_TOKEN_THRESHOLD" ]; then
+            CMD="$CMD --long_prefill_token_threshold $LONG_PREFILL_TOKEN_THRESHOLD"
+        fi
 
-    if [ ! -z "$ASYNC_SCHEDULING" ]; then
-        CMD="$CMD --async_scheduling $ASYNC_SCHEDULING"
-    fi
+        if [ ! -z "$SCHEDULING_POLICY" ]; then
+            CMD="$CMD --scheduling_policy $SCHEDULING_POLICY"
+        fi
 
-    if [ ! -z "$STREAM_INTERVAL" ]; then
-        CMD="$CMD --stream_interval $STREAM_INTERVAL"
-    fi
+        if [ ! -z "$ENABLE_CHUNKED_PREFILL" ]; then
+            CMD="$CMD --enable_chunked_prefill $ENABLE_CHUNKED_PREFILL"
+        fi
 
-    # Print command
-    echo "Command: $CMD"
-    echo "Output: $OUTPUT_FILE"
-    echo ""
+        if [ ! -z "$DISABLE_CHUNKED_MM_INPUT" ]; then
+            if [ "$DISABLE_CHUNKED_MM_INPUT" = "true" ]; then
+                CMD="$CMD --disable_chunked_mm_input"
+            fi
+        fi
 
-    # Run the command and save output
-    $CMD 2>&1 | tee "$OUTPUT_FILE"
+        if [ ! -z "$SCHEDULER_CLS" ]; then
+            CMD="$CMD --scheduler_cls $SCHEDULER_CLS"
+        fi
 
-    # Check exit status
-    if [ $? -eq 0 ]; then
+        if [ ! -z "$DISABLE_HYBRID_KV_CACHE_MANAGER" ]; then
+            CMD="$CMD --disable_hybrid_kv_cache_manager $DISABLE_HYBRID_KV_CACHE_MANAGER"
+        fi
+
+        if [ ! -z "$ASYNC_SCHEDULING" ]; then
+            CMD="$CMD --async_scheduling $ASYNC_SCHEDULING"
+        fi
+
+        if [ ! -z "$STREAM_INTERVAL" ]; then
+            CMD="$CMD --stream_interval $STREAM_INTERVAL"
+        fi
+
+        # Print command
+        echo "Command: $CMD"
+        echo "Output: $OUTPUT_FILE"
         echo ""
-        echo "✓ Batch size $batch_size completed successfully"
-    else
-        echo ""
-        echo "✗ Batch size $batch_size failed"
-    fi
 
-    echo ""
-    echo "Waiting 5 seconds before next run..."
-    sleep 5
+        # Run the command and save output
+        $CMD 2>&1 | tee "$OUTPUT_FILE"
+
+        # Check exit status
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo "✓ Config (batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens) completed successfully"
+        else
+            echo ""
+            echo "✗ Config (batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens) failed"
+        fi
+
+        echo ""
+        echo "Waiting 5 seconds before next run..."
+        sleep 5
+        echo ""
+    done
     echo ""
 done
 
@@ -153,10 +164,10 @@ echo "Experiment Summary" > "$SUMMARY_FILE"
 echo "==================" >> "$SUMMARY_FILE"
 echo "Timestamp: $TIMESTAMP" >> "$SUMMARY_FILE"
 echo "Batch sizes tested: ${BATCH_SIZES[@]}" >> "$SUMMARY_FILE"
+echo "MAX_NUM_BATCHED_TOKENS configs tested: ${MAX_NUM_BATCHED_TOKENS_CONFIGS[@]}" >> "$SUMMARY_FILE"
 echo "" >> "$SUMMARY_FILE"
 echo "Optional Parameters Used:" >> "$SUMMARY_FILE"
 echo "-------------------------" >> "$SUMMARY_FILE"
-[ ! -z "$MAX_NUM_BATCHED_TOKENS" ] && echo "  MAX_NUM_BATCHED_TOKENS: $MAX_NUM_BATCHED_TOKENS" >> "$SUMMARY_FILE"
 [ ! -z "$MAX_NUM_PARTIAL_PREFILLS" ] && echo "  MAX_NUM_PARTIAL_PREFILLS: $MAX_NUM_PARTIAL_PREFILLS" >> "$SUMMARY_FILE"
 [ ! -z "$MAX_LONG_PARTIAL_PREFILLS" ] && echo "  MAX_LONG_PARTIAL_PREFILLS: $MAX_LONG_PARTIAL_PREFILLS" >> "$SUMMARY_FILE"
 [ ! -z "$LONG_PREFILL_TOKEN_THRESHOLD" ] && echo "  LONG_PREFILL_TOKEN_THRESHOLD: $LONG_PREFILL_TOKEN_THRESHOLD" >> "$SUMMARY_FILE"
