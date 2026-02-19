@@ -124,6 +124,9 @@ python test_disaggregated_dp_server.py \
 --output-file FILE       Save benchmark metrics to JSON
 --dump-text FILE         Dump prompts + generated text to file (.json or .txt)
 --verbose                Print detailed error info
+--barrier-mode           Enable barrier mode (see Barrier Mode section below)
+--prefiller-url URL      Direct prefiller URL for barrier mode (default: http://localhost:8100)
+--decoder-url URL        Direct decoder URL for barrier mode (default: http://localhost:8200)
 ```
 
 ### Prompt Sources
@@ -187,6 +190,100 @@ python test_disaggregated_dp_server.py \
   --num-prompts 10 \
   --request-rate 2.0
 ```
+
+---
+
+## Barrier Mode
+
+Barrier mode separates the benchmark into two strictly sequential phases, giving you isolated measurements of prefill and decode performance without any overlap between the two.
+
+### Why use barrier mode?
+
+In the default (proxy) mode, prefill and decode run concurrently — new prefill requests are dispatched while earlier requests are already decoding. This is realistic for production traffic but makes it hard to isolate decoder throughput, because the prefiller and decoder are competing for resources simultaneously.
+
+Barrier mode enforces a hard synchronization point:
+
+```
+ Phase 1: Prefill                          Phase 2: Decode
+ ┌──────────────────────────────────┐      ┌──────────────────────────────────┐
+ │  Send all requests to prefiller  │      │  Send all decode requests to     │
+ │  at the configured rate.         │─────►│  decoder simultaneously.         │
+ │  Collect kv_transfer_params.     │      │  Stream tokens back.             │
+ │  WAIT until ALL complete.        │      │                                  │
+ └──────────────────────────────────┘      └──────────────────────────────────┘
+         ▲ barrier (gather)                        ▲ barrier (gather)
+```
+
+This lets you answer questions like:
+- What is the decoder's throughput when it has the **maximum batch size** (all requests decoded at once)?
+- How long does prefill take **without** any decode contention?
+- What is the pure KV transfer overhead?
+
+### How it works
+
+1. **Phase 1 (Prefill):** The client sends all requests directly to the **prefiller** (bypassing the proxy) at the configured rate and distribution. Each request is sent with `max_tokens=1` and `kv_transfer_params: {do_remote_decode: True}`. The client collects the returned `kv_transfer_params` (containing remote block IDs and NIXL connection info) from every response. The phase blocks until **all** prefill responses are received.
+
+2. **Phase 2 (Decode):** The client sends all decode requests directly to the **decoder** (bypassing the proxy) simultaneously with no rate limiting. Each request carries the `kv_transfer_params` from Phase 1, so the decoder loads the pre-computed KV cache via RDMA and generates the full completion. Tokens are streamed back to the client.
+
+```
+ Client
+   │
+   │ Phase 1: POST /v1/completions (max_tokens=1, do_remote_decode=True)
+   ├──────────────────────►  Prefiller (port 8100)
+   │                         Computes KV cache, returns kv_transfer_params
+   │◄──────────────────────
+   │
+   │ ... wait for ALL prefills ...
+   │
+   │ Phase 2: POST /v1/completions (kv_transfer_params attached)
+   ├──────────────────────►  Decoder (port 8200)
+   │                         Loads KV via RDMA, streams tokens
+   │◄══════════════════════  (SSE stream)
+```
+
+### Usage
+
+```bash
+# Barrier mode: 50 requests, Poisson arrival at 5 req/s during prefill phase
+python test_disaggregated_dp_server.py \
+  --barrier-mode \
+  --prefiller-url http://localhost:8100 \
+  --decoder-url http://localhost:8200 \
+  --num-prompts 50 \
+  --request-rate 5.0 \
+  --output-file barrier_results.json
+
+# Barrier mode: burst all prefills at once, then decode all at once
+python test_disaggregated_dp_server.py \
+  --barrier-mode \
+  --prefiller-url http://localhost:8100 \
+  --decoder-url http://localhost:8200 \
+  --num-prompts 20 \
+  --request-rate inf
+
+# Barrier mode with ShareGPT dataset and chat endpoint
+python test_disaggregated_dp_server.py \
+  --barrier-mode \
+  --prefiller-url http://localhost:8100 \
+  --decoder-url http://localhost:8200 \
+  --endpoint chat \
+  --dataset sharegpt \
+  --dataset-path /path/to/ShareGPT_V3_unfiltered.json \
+  --num-prompts 100 \
+  --request-rate 10.0
+```
+
+> **Note:** Barrier mode communicates directly with the prefiller and decoder, bypassing the proxy server entirely. The `--proxy-url` flag is ignored when `--barrier-mode` is set. You must have the prefiller and decoder servers running and accessible at the specified URLs.
+
+### Barrier mode vs. default (proxy) mode
+
+| | Default (proxy) mode | Barrier mode |
+|---|---|---|
+| **Routing** | Client → Proxy → Prefiller/Decoder | Client → Prefiller, then Client → Decoder |
+| **Concurrency** | Prefill & decode overlap | Prefill completes fully, then decode starts |
+| **Rate limiting** | Applied to all requests | Applied to prefill phase only; decode is burst |
+| **Use case** | Realistic production traffic | Isolated phase benchmarking |
+| **Requires proxy** | Yes | No |
 
 ---
 

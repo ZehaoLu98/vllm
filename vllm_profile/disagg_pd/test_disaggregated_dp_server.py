@@ -1057,7 +1057,33 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose output",
     )
-    
+
+    # Barrier mode configuration
+    parser.add_argument(
+        "--barrier-mode",
+        action="store_true",
+        default=False,
+        help=(
+            "Wait for ALL prefills to finish before starting ANY decode. "
+            "Requires --prefiller-url and --decoder-url. "
+            "Phase 1: send all requests to prefiller at the configured rate, "
+            "collect kv_transfer_params. "
+            "Phase 2: send all decode requests to decoder simultaneously."
+        ),
+    )
+    parser.add_argument(
+        "--prefiller-url",
+        type=str,
+        default="http://localhost:8100",
+        help="Direct URL of the prefiller vLLM server (used in barrier mode, default: http://localhost:8100)",
+    )
+    parser.add_argument(
+        "--decoder-url",
+        type=str,
+        default="http://localhost:8200",
+        help="Direct URL of the decoder vLLM server (used in barrier mode, default: http://localhost:8200)",
+    )
+
     args = parser.parse_args()
     
     # Handle inf request rate
@@ -1065,6 +1091,253 @@ def parse_args() -> argparse.Namespace:
         args.request_rate = float("inf")
     
     return args
+
+
+# =============================================================================
+# Barrier-Mode Benchmark
+# =============================================================================
+
+@dataclass
+class PrefillResult:
+    """Holds the kv_transfer_params returned by the prefiller for one request."""
+    request: SampleRequest
+    kv_transfer_params: dict | None
+    error: str = ""
+
+
+async def _send_prefill_only(
+    request: SampleRequest,
+    api_url: str,
+    model: str,
+    pbar: tqdm | None = None,
+) -> PrefillResult:
+    """
+    Phase 1: send a request to the prefiller with do_remote_decode=True and
+    max_tokens=1. Returns the kv_transfer_params from the prefiller response.
+    """
+    payload = {
+        "model": model,
+        "prompt": request.prompt,
+        "max_tokens": 1,
+        "temperature": 0.0,
+        "stream": False,
+        "kv_transfer_params": {
+            "do_remote_decode": True,
+            "do_remote_prefill": False,
+            "remote_engine_id": None,
+            "remote_block_ids": None,
+            "remote_host": None,
+            "remote_port": None,
+        },
+    }
+    headers = {"Content-Type": "application/json"}
+    if api_key := os.environ.get("OPENAI_API_KEY"):
+        headers["Authorization"] = f"Bearer {api_key}"
+    if request.request_id:
+        headers["X-Request-Id"] = request.request_id
+
+    try:
+        async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
+            async with session.post(api_url, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+        kv_params = data.get("kv_transfer_params") or {}
+        if pbar:
+            pbar.update(1)
+        return PrefillResult(request=request, kv_transfer_params=kv_params)
+    except Exception as e:
+        if pbar:
+            pbar.update(1)
+        return PrefillResult(request=request, kv_transfer_params=None, error=str(e))
+
+
+async def _send_decode_only(
+    prefill_result: PrefillResult,
+    api_url: str,
+    model: str,
+    expected_output_len: int,
+    endpoint: str = "completions",
+    pbar: tqdm | None = None,
+) -> RequestFuncOutput:
+    """
+    Phase 2: send a decode request to the decoder, attaching the
+    kv_transfer_params obtained from the prefiller.
+    """
+    request = prefill_result.request
+    output = RequestFuncOutput(prompt_len=request.prompt_len)
+
+    if not prefill_result.kv_transfer_params:
+        output.error = f"No kv_transfer_params from prefill: {prefill_result.error}"
+        if pbar:
+            pbar.update(1)
+        return output
+
+    if endpoint == "chat":
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": request.prompt}],
+            "max_tokens": expected_output_len,
+            "temperature": 0.0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "kv_transfer_params": prefill_result.kv_transfer_params,
+        }
+    else:
+        payload = {
+            "model": model,
+            "prompt": request.prompt,
+            "max_tokens": expected_output_len,
+            "temperature": 0.0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "kv_transfer_params": prefill_result.kv_transfer_params,
+        }
+
+    headers = {"Content-Type": "application/json"}
+    if api_key := os.environ.get("OPENAI_API_KEY"):
+        headers["Authorization"] = f"Bearer {api_key}"
+    if request.request_id:
+        headers["X-Request-Id"] = request.request_id
+
+    generated_text = ""
+    start_time = time.perf_counter()
+    most_recent_time = start_time
+    first_token_received = False
+
+    try:
+        async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
+            async with session.post(api_url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    async for chunk_bytes in resp.content:
+                        chunk_bytes = chunk_bytes.strip()
+                        if not chunk_bytes:
+                            continue
+                        for line in chunk_bytes.decode("utf-8").splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            line = line.removeprefix("data: ").removeprefix("data:")
+                            if line == "[DONE]":
+                                continue
+                            try:
+                                data = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+
+                            choices = data.get("choices")
+                            if choices:
+                                if endpoint == "chat":
+                                    text = choices[0].get("delta", {}).get("content", "")
+                                else:
+                                    text = choices[0].get("text", "")
+                                timestamp = time.perf_counter()
+                                if text and not first_token_received:
+                                    first_token_received = True
+                                    output.ttft = timestamp - start_time
+                                elif text:
+                                    output.itl.append(timestamp - most_recent_time)
+                                if text:
+                                    most_recent_time = timestamp
+                                    generated_text += text
+
+                            if usage := data.get("usage"):
+                                output.output_tokens = usage.get("completion_tokens", 0)
+
+                    output.latency = most_recent_time - start_time
+                    output.generated_text = generated_text
+                    output.success = first_token_received
+                    if not output.output_tokens and first_token_received:
+                        output.output_tokens = len(output.itl) + 1
+                    if first_token_received and output.output_tokens > 1:
+                        decode_duration = output.latency - output.ttft
+                        output.tpot = decode_duration / (output.output_tokens - 1)
+                    if not first_token_received:
+                        output.error = "No valid tokens received"
+                else:
+                    err = await resp.text()
+                    output.error = f"HTTP {resp.status}: {err[:200]}"
+    except asyncio.TimeoutError:
+        output.error = "Request timed out"
+    except Exception as e:
+        output.error = str(e)
+
+    if pbar:
+        pbar.update(1)
+    return output
+
+
+async def run_benchmark_barrier_mode(
+    requests: list[SampleRequest],
+    args: argparse.Namespace,
+) -> tuple[list[RequestFuncOutput], float]:
+    """
+    Barrier-mode benchmark:
+      Phase 1 — send all requests to the prefiller at the configured rate.
+                Block until EVERY prefill response has been received.
+      Phase 2 — send all decode requests to the decoder simultaneously
+                (no rate limiting) and stream results.
+    """
+    prefiller_base = args.prefiller_url.rstrip("/")
+    decoder_base = args.decoder_url.rstrip("/")
+    endpoint_path = "/v1/completions" if args.endpoint == "completions" else "/v1/chat/completions"
+    prefill_api_url = f"{prefiller_base}{endpoint_path}"
+    decode_api_url = f"{decoder_base}{endpoint_path}"
+
+    # ------------------------------------------------------------------
+    # Phase 1: prefill all requests (respecting the configured rate)
+    # ------------------------------------------------------------------
+    print(f"[Barrier] Phase 1: prefilling {len(requests)} requests at "
+          f"{args.request_rate} req/s → {prefill_api_url}")
+
+    prefill_pbar = tqdm(total=len(requests), desc="Phase 1 – Prefill")
+    prefill_tasks: list[asyncio.Task] = []
+
+    benchmark_start = time.perf_counter()
+
+    async for request, _ in generate_requests(
+        requests,
+        args.request_rate,
+        args.distribution,
+        args.burstiness,
+        args.ramp_start_rps,
+        args.ramp_end_rps,
+    ):
+        task = asyncio.create_task(
+            _send_prefill_only(request, prefill_api_url, args.model, prefill_pbar)
+        )
+        prefill_tasks.append(task)
+
+    # Wait for ALL prefills before starting any decode.
+    prefill_results: list[PrefillResult] = list(await asyncio.gather(*prefill_tasks))
+    prefill_pbar.close()
+
+    prefill_done_time = time.perf_counter()
+    failed_prefills = sum(1 for r in prefill_results if not r.kv_transfer_params)
+    print(f"[Barrier] Phase 1 complete in {prefill_done_time - benchmark_start:.2f}s "
+          f"({len(prefill_results) - failed_prefills} ok, {failed_prefills} failed).")
+
+    # ------------------------------------------------------------------
+    # Phase 2: decode all requests simultaneously
+    # ------------------------------------------------------------------
+    print(f"[Barrier] Phase 2: decoding {len(prefill_results)} requests "
+          f"simultaneously → {decode_api_url}")
+
+    decode_pbar = tqdm(total=len(prefill_results), desc="Phase 2 – Decode")
+    decode_tasks = [
+        asyncio.create_task(
+            _send_decode_only(
+                pr, decode_api_url, args.model,
+                pr.request.expected_output_len, args.endpoint, decode_pbar
+            )
+        )
+        for pr in prefill_results
+    ]
+
+    outputs: list[RequestFuncOutput] = list(await asyncio.gather(*decode_tasks))
+    decode_pbar.close()
+
+    total_duration = time.perf_counter() - benchmark_start
+    return outputs, total_duration
 
 
 async def main() -> int:
@@ -1086,7 +1359,11 @@ async def main() -> int:
     
     # Run benchmark
     try:
-        outputs, total_duration = await run_benchmark(requests, args)
+        if args.barrier_mode:
+            print("[Barrier mode ON] All prefills must complete before decoding starts.")
+            outputs, total_duration = await run_benchmark_barrier_mode(requests, args)
+        else:
+            outputs, total_duration = await run_benchmark(requests, args)
     except Exception as e:
         print(f"Error running benchmark: {e}")
         if args.verbose:
