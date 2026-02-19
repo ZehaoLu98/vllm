@@ -119,6 +119,12 @@ class BenchmarkResults:
     total_output_tokens: int = 0
     request_throughput: float = 0.0
     output_throughput: float = 0.0
+    # Decoder-specific metrics
+    decoder_output_throughput: float = 0.0  # tokens/s during decode phase only
+    mean_tpot_ms: float = 0.0
+    median_tpot_ms: float = 0.0
+    p99_tpot_ms: float = 0.0
+    # TTFT (includes prefill + KV transfer + proxy overhead)
     mean_ttft_ms: float = 0.0
     median_ttft_ms: float = 0.0
     p99_ttft_ms: float = 0.0
@@ -127,6 +133,7 @@ class BenchmarkResults:
     p99_latency_ms: float = 0.0
     mean_itl_ms: float = 0.0
     median_itl_ms: float = 0.0
+    p99_itl_ms: float = 0.0
 
 
 # =============================================================================
@@ -502,6 +509,17 @@ async def send_request_openai_completions(
                     output.generated_text = generated_text
                     output.success = first_token_received
                     
+                    # Fix output token count: use streaming token
+                    # count if usage field wasn't available
+                    if not output.output_tokens and first_token_received:
+                        # len(itl) intervals + 1 first token
+                        output.output_tokens = len(output.itl) + 1
+                    
+                    # Compute TPOT (decode phase only)
+                    if first_token_received and output.output_tokens > 1:
+                        decode_duration = output.latency - output.ttft
+                        output.tpot = decode_duration / (output.output_tokens - 1)
+                    
                     if not first_token_received:
                         output.error = "No valid tokens received"
                 else:
@@ -599,6 +617,17 @@ async def send_request_openai_chat(
                     output.generated_text = generated_text
                     output.success = first_token_received
                     
+                    # Fix output token count: use streaming token
+                    # count if usage field wasn't available
+                    if not output.output_tokens and first_token_received:
+                        # len(itl) intervals + 1 first token
+                        output.output_tokens = len(output.itl) + 1
+                    
+                    # Compute TPOT (decode phase only)
+                    if first_token_received and output.output_tokens > 1:
+                        decode_duration = output.latency - output.ttft
+                        output.tpot = decode_duration / (output.output_tokens - 1)
+                    
                     if not first_token_received:
                         output.error = "No valid tokens received"
                 else:
@@ -687,15 +716,25 @@ def calculate_results(
     ttfts = []
     latencies = []
     all_itls = []
+    tpots = []
+    decode_durations = []
+    decode_output_tokens = []
     
     for output in outputs:
         if output.success:
             results.completed += 1
             results.total_input_tokens += output.prompt_len
-            results.total_output_tokens += output.output_tokens or len(output.generated_text.split())
+            results.total_output_tokens += output.output_tokens
             ttfts.append(output.ttft)
             latencies.append(output.latency)
             all_itls.extend(output.itl)
+            
+            # Decoder-specific: decode phase = latency - ttft
+            if output.output_tokens > 1:
+                tpots.append(output.tpot)
+                decode_dur = output.latency - output.ttft
+                decode_durations.append(decode_dur)
+                decode_output_tokens.append(output.output_tokens - 1)  # first token is part of TTFT
         else:
             results.failed += 1
     
@@ -704,6 +743,24 @@ def calculate_results(
     if results.completed > 0:
         results.request_throughput = results.completed / total_duration
         results.output_throughput = results.total_output_tokens / total_duration
+        
+        # Decoder output throughput: tokens generated during decode phase
+        # divided by total decode wall-clock time across all requests.
+        # For concurrent requests, use the sum of per-request decode
+        # durations to get the aggregate decode throughput.
+        if decode_durations:
+            total_decode_tokens = sum(decode_output_tokens)
+            # Per-request average decoder throughput
+            per_req_throughputs = [
+                t / d for t, d in zip(decode_output_tokens, decode_durations) if d > 0
+            ]
+            results.decoder_output_throughput = float(np.mean(per_req_throughputs)) if per_req_throughputs else 0.0
+        
+        # TPOT stats (in ms)
+        if tpots:
+            results.mean_tpot_ms = np.mean(tpots) * 1000
+            results.median_tpot_ms = np.median(tpots) * 1000
+            results.p99_tpot_ms = np.percentile(tpots, 99) * 1000
         
         # TTFT stats (in ms)
         results.mean_ttft_ms = np.mean(ttfts) * 1000
@@ -719,6 +776,7 @@ def calculate_results(
         if all_itls:
             results.mean_itl_ms = np.mean(all_itls) * 1000
             results.median_itl_ms = np.median(all_itls) * 1000
+            results.p99_itl_ms = np.percentile(all_itls, 99) * 1000
     
     return results
 
@@ -744,17 +802,24 @@ def print_results(results: BenchmarkResults, args: argparse.Namespace) -> None:
     print(f"\nThroughput:")
     print(f"  Total Duration:   {results.total_duration:.2f}s")
     print(f"  Request Rate:     {results.request_throughput:.2f} req/s")
-    print(f"  Output Rate:      {results.output_throughput:.2f} tokens/s")
+    print(f"  Output Rate:      {results.output_throughput:.2f} tokens/s (end-to-end)")
     print(f"  Input Tokens:     {results.total_input_tokens}")
     print(f"  Output Tokens:    {results.total_output_tokens}")
     
     if results.completed > 0:
-        print(f"\nLatency (Time to First Token):")
+        print(f"\nDecoder Metrics:")
+        print(f"  Decoder Throughput: {results.decoder_output_throughput:.2f} tokens/s (decode phase only)")
+        if results.mean_tpot_ms > 0:
+            print(f"  Mean TPOT:        {results.mean_tpot_ms:.2f}ms")
+            print(f"  Median TPOT:      {results.median_tpot_ms:.2f}ms")
+            print(f"  P99 TPOT:         {results.p99_tpot_ms:.2f}ms")
+        
+        print(f"\nTime to First Token (prefill + KV transfer + proxy):")
         print(f"  Mean TTFT:        {results.mean_ttft_ms:.2f}ms")
         print(f"  Median TTFT:      {results.median_ttft_ms:.2f}ms")
         print(f"  P99 TTFT:         {results.p99_ttft_ms:.2f}ms")
         
-        print(f"\nLatency (End-to-End):")
+        print(f"\nEnd-to-End Latency:")
         print(f"  Mean Latency:     {results.mean_latency_ms:.2f}ms")
         print(f"  Median Latency:   {results.median_latency_ms:.2f}ms")
         print(f"  P99 Latency:      {results.p99_latency_ms:.2f}ms")
@@ -763,6 +828,7 @@ def print_results(results: BenchmarkResults, args: argparse.Namespace) -> None:
             print(f"\nInter-Token Latency:")
             print(f"  Mean ITL:         {results.mean_itl_ms:.2f}ms")
             print(f"  Median ITL:       {results.median_itl_ms:.2f}ms")
+            print(f"  P99 ITL:          {results.p99_itl_ms:.2f}ms")
     
     print("\n" + "=" * 60)
 
@@ -793,6 +859,10 @@ def save_results(
             "total_output_tokens": results.total_output_tokens,
             "request_throughput": results.request_throughput,
             "output_throughput": results.output_throughput,
+            "decoder_output_throughput": results.decoder_output_throughput,
+            "mean_tpot_ms": results.mean_tpot_ms,
+            "median_tpot_ms": results.median_tpot_ms,
+            "p99_tpot_ms": results.p99_tpot_ms,
             "mean_ttft_ms": results.mean_ttft_ms,
             "median_ttft_ms": results.median_ttft_ms,
             "p99_ttft_ms": results.p99_ttft_ms,
@@ -801,12 +871,15 @@ def save_results(
             "p99_latency_ms": results.p99_latency_ms,
             "mean_itl_ms": results.mean_itl_ms,
             "median_itl_ms": results.median_itl_ms,
+            "p99_itl_ms": results.p99_itl_ms,
         },
         "individual_results": [
             {
                 "success": o.success,
                 "latency": o.latency,
                 "ttft": o.ttft,
+                "tpot": o.tpot,
+                "decode_duration": o.latency - o.ttft if o.success else None,
                 "output_tokens": o.output_tokens,
                 "generated_text": o.generated_text,
                 "error": o.error if not o.success else None,

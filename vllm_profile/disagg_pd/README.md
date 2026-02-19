@@ -313,10 +313,6 @@ This is the whole point of disaggregation: the decoder only ever does decode ste
 
 The proxy sends the request to the prefiller with `max_tokens=1` to force it to process all prompt tokens (computing the full KV cache) but generate only a single output token. The prefiller's job is to compute the KV cache and make it available — not to generate the full completion. The single output token is discarded; only the `kv_transfer_params` (containing remote block IDs and connection info) are extracted and forwarded to the decoder.
 
-### Why do question-style prompts produce empty output through the disagg pipeline?
-
-Base models (like TinyLlama) are not instruction-tuned. When a question prompt like "What is the capital of France?" is processed through the disaggregated pipeline, the model may immediately generate an EOS token on the decoder's first decode step. This does not happen with the same prompt sent directly to a single vLLM instance (which runs prefill + decode in one pass), likely due to subtle numerical differences in KV cache precision during the RDMA transfer. Use continuation-style prompts (e.g., "Once upon a time...") with base models.
-
 ### What is `kv_role=kv_both` and why do both instances use it?
 
 `kv_role=kv_both` means the instance can both **save** (send) and **load** (receive) KV caches. The prefiller saves KV caches after computing them; the decoder loads KV caches before generating. Both need the NIXL connector initialized for their respective role, and `kv_both` enables that on both sides. This also allows a single instance to serve as both prefiller and decoder (useful for testing).
