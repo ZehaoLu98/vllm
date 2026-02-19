@@ -476,6 +476,54 @@ The proxy orchestrates the two-phase flow inside `_handle_completions()`:
 
 The prompt text is re-sent to the decoder for tokenization and token-ID validation, but the decoder **does not recompute the KV cache** — it loads the pre-computed blocks directly from the prefiller's GPU.
 
+### When exactly is the KV cache transferred?
+
+The KV cache is transferred on the **decoder side**, initiated asynchronously between scheduler steps — not pushed by the prefiller, and not deferred until a specific decode token needs it.
+
+Here is the precise timeline:
+
+```
+PREFILLER SIDE                          DECODER SIDE
+─────────────────                       ─────────────────────────────────────
+1. Receives request
+2. Runs prefill forward pass
+   → Full KV cache now in GPU memory
+3. Returns kv_transfer_params
+   (block IDs, engine ID, host, port)
+   KV cache sits in GPU memory,         4. Receives request + kv_transfer_params
+   waiting to be pulled by decoder      5. get_num_new_matched_tokens() reports
+                                           all prompt tokens as external
+                                           → load_kv_async = True
+                                        6. Scheduler puts request into
+                                           WAITING_FOR_REMOTE_KVS
+                                           (no forward pass scheduled)
+
+                                        7. start_load_kv() fires a non-blocking
+                                           RDMA pull (nixl_xfer) from prefiller GPU.
+                                           Called at the start of execute_model,
+                                           before the next forward pass.
+
+                                        8. RDMA transfer runs in background while
+                                           decoder processes other requests.
+                                           Each step checks if it is done.
+
+                                        9. Transfer completes → request moves
+                                           WAITING_FOR_REMOTE_KVS → WAITING
+
+                                        10. Scheduler sees all KV blocks loaded,
+                                            treats it as a normal decode request.
+```
+
+**Key design points:**
+
+- The prefiller **does not push** the KV cache. It holds the blocks in GPU memory after prefill and waits for the decoder to pull them.
+- The decoder **pulls** the KV cache via RDMA when `start_load_kv()` is called at the beginning of `execute_model` on the worker.
+- The RDMA transfer is **non-blocking** — it runs in the background while the decoder continues its normal step loop processing other requests.
+- `start_load_kv()` is called once per scheduler step. Each call may start new transfers or check completion of in-progress ones.
+- The prefiller's GPU memory is not freed until the decoder confirms the blocks have been read (via a release notification sent over the NIXL side channel).
+
+This design means the KV transfer and decode steps for other requests **overlap** — the decoder does not sit idle waiting for the transfer to finish.
+
 ### What is `kv_role=kv_both` and why do both instances use it?
 
 `kv_role=kv_both` means the instance can both **save** (send) and **load** (receive) KV caches. The prefiller saves KV caches after computing them; the decoder loads KV caches before generating. Both need the NIXL connector initialized for their respective role, and `kv_both` enables that on both sides. This also allows a single instance to serve as both prefiller and decoder (useful for testing).
