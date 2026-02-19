@@ -56,6 +56,7 @@ def run_prefill(prefill_queue, decode_ready):
         enable_prefix_caching=False,
         max_num_seqs=128,
         max_num_batched_tokens=1024,
+        enforce_eager=True,
     )
     engine = LLMEngine.from_engine_args(engine_args)
 
