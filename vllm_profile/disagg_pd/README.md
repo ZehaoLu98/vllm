@@ -190,14 +190,40 @@ python test_disaggregated_dp_server.py \
 
 ---
 
-## Benchmark Output
+## Benchmark Metrics Reference
 
-The client reports:
-- **Request statistics** — completed, failed, success rate
-- **Throughput** — request rate (req/s), output token rate (tokens/s)
-- **Latency** — TTFT (time to first token), end-to-end latency, inter-token latency (mean, median, P99)
+The benchmark client measures latency at the **client side** (outside the proxy), so every metric includes network round-trip and proxy overhead.
 
-Example output:
+### Timing Diagram
+
+```
+                         TTFT
+          ├──────────────────────────────┤
+          │  prefill + KV xfer + proxy   │
+request ──┤                              ├── T1 ── T2 ── T3 ── ... ── Tn ──► done
+          │                              │   ├─┤  ├─┤  ├─┤
+          │                              │    ITL  ITL  ITL
+          │                              │
+          │◄──────────────────── end-to-end latency ──────────────────────►│
+          │                              │◄──── decode duration ──────────►│
+```
+
+### Metrics
+
+| Metric | What it measures | Formula | Unit |
+|---|---|---|---|
+| **TTFT** | Time to first token — covers prefill, KV transfer (RDMA), proxy hops, and network | `first_token_time - request_start` | ms |
+| **TPOT** | Time per output token — average decode-phase latency per token | `(latency - TTFT) / (output_tokens - 1)` | ms |
+| **ITL** | Inter-token latency — gap between consecutive streamed tokens | `token[i]_time - token[i-1]_time` | ms |
+| **End-to-end latency** | Total request duration from send to last token | `last_token_time - request_start` | ms |
+| **Request throughput** | Completed requests per second over the benchmark | `completed / total_duration` | req/s |
+| **Output throughput** | Total output tokens per second (end-to-end) | `total_output_tokens / total_duration` | tok/s |
+| **Decoder throughput** | Mean per-request decode-phase token rate | `mean(decode_tokens / decode_duration)` | tok/s |
+
+All latency metrics are reported as **mean**, **median (P50)**, and **P99**.
+
+### Example Output
+
 ```
 ============================================================
 BENCHMARK RESULTS
@@ -211,13 +237,30 @@ Request Statistics:
 Throughput:
   Total Duration:   0.97s
   Request Rate:     5.14 req/s
-  Output Rate:      623.81 tokens/s
+  Output Rate:      623.81 tokens/s (end-to-end)
+  Decoder Throughput: 680.42 tokens/s (decode phase only)
+  Input Tokens:     50
   Output Tokens:    607
 
-Latency (Time to First Token):
+Decoder Metrics:
+  Mean TPOT:        1.47ms
+  Median TPOT:      1.45ms
+  P99 TPOT:         1.62ms
+
+Time to First Token (prefill + KV transfer + proxy):
   Mean TTFT:        71.70ms
   Median TTFT:      52.15ms
   P99 TTFT:         156.41ms
+
+End-to-End Latency:
+  Mean Latency:     260.30ms
+  Median Latency:   245.12ms
+  P99 Latency:      310.50ms
+
+Inter-Token Latency:
+  Mean ITL:         1.55ms
+  Median ITL:       1.50ms
+  P99 ITL:          2.10ms
 ============================================================
 ```
 
@@ -312,6 +355,29 @@ This is the whole point of disaggregation: the decoder only ever does decode ste
 ### Why does the prefill run with `max_tokens=1`?
 
 The proxy sends the request to the prefiller with `max_tokens=1` to force it to process all prompt tokens (computing the full KV cache) but generate only a single output token. The prefiller's job is to compute the KV cache and make it available — not to generate the full completion. The single output token is discarded; only the `kv_transfer_params` (containing remote block IDs and connection info) are extracted and forwarded to the decoder.
+
+### How is data transferred between the prefiller and decoder?
+
+The prompt text and KV cache metadata travel over **HTTP** through the proxy, while the heavy KV cache tensors are transferred directly **GPU-to-GPU** via NIXL (RDMA). No KV data passes through the proxy or CPU.
+
+```
+  Hop                       What moves                   Protocol
+  ─────────────────────────────────────────────────────────────────
+  Client    → Proxy         Prompt text (JSON)            HTTP
+  Proxy     → Prefiller     Prompt + {do_remote_decode}   HTTP
+  Prefiller → Proxy         1 token + KV block metadata   HTTP
+  Proxy     → Decoder       Prompt + KV block metadata    HTTP
+  Prefiller → Decoder       KV cache tensors              NIXL/RDMA
+                            (GPU mem → GPU mem)
+```
+
+The proxy orchestrates the two-phase flow inside `_handle_completions()`:
+
+1. **Prefill request** (`send_request_to_service`) — the proxy adds `kv_transfer_params: {do_remote_decode: True}`, sets `max_tokens=1` and `stream=False`, and sends the prompt to the prefiller over HTTP. The prefiller computes the full KV cache and returns a response containing `kv_transfer_params` with `remote_block_ids`, `remote_engine_id`, `remote_host`, and `remote_port`.
+
+2. **Decode request** (`stream_service_response`) — the proxy extracts `kv_transfer_params` from the prefill response, attaches it to the original request body, and streams it to the decoder. The decoder uses these params to pull the KV cache from the prefiller's GPU memory via NIXL (RDMA), then generates tokens which stream back through the proxy to the client.
+
+The prompt text is re-sent to the decoder for tokenization and token-ID validation, but the decoder **does not recompute the KV cache** — it loads the pre-computed blocks directly from the prefiller's GPU.
 
 ### What is `kv_role=kv_both` and why do both instances use it?
 
