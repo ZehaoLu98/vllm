@@ -102,7 +102,7 @@ def parse_args():
     parser.add_argument(
         "--enable_chunked_prefill",
         type=lambda x: None if x.lower() == 'none' else x.lower() == 'true',
-        default=False,
+        default=True,
         help="If True, prefill requests can be chunked based on the remaining max_num_batched_tokens. (true/false/none)"
     )
 
@@ -111,7 +111,6 @@ def parse_args():
         action="store_true",
         default=False,
         help="If set, do not partially schedule multimodal items when chunked prefill is enabled."
-    )
 
     parser.add_argument(
         "--scheduler_cls",
