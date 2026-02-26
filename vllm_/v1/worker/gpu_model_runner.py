@@ -5591,6 +5591,13 @@ class GPUModelRunner(
                         stride=(hidden_size, 2 * hidden_size, *kv_cache.stride()[2:]),
                     )
 
+    def _is_full_offload_enabled(self) -> bool:
+        """Check if full KV cache offloading to CPU is enabled."""
+        ktc = self.vllm_config.kv_transfer_config
+        if ktc is None:
+            return False
+        return ktc.get_from_extra_config("full_offload", False)
+
     def initialize_kv_cache_tensors(
         self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
     ) -> dict[str, torch.Tensor]:
@@ -5605,6 +5612,12 @@ class GPUModelRunner(
             Dict[str, torch.Tensor]: A map between layer names to their
             corresponding memory buffer for KV cache.
         """
+
+        # Check if full offloading mode is enabled
+        if self._is_full_offload_enabled():
+            return self._initialize_kv_cache_tensors_with_offloading(
+                kv_cache_config, kernel_block_sizes
+            )
 
         # Try creating KV caches optimized for kv-connector transfers
         cache_dtype = self.cache_config.cache_dtype
@@ -5645,6 +5658,58 @@ class GPUModelRunner(
             num_attn_module,
         )
         return kv_caches
+
+    def _initialize_kv_cache_tensors_with_offloading(
+        self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
+    ) -> dict[str, torch.Tensor]:
+        """Initialize KV cache with per-layer CPU offloading.
+
+        Allocates a small GPU buffer (2 layers) and full CPU backing store.
+        """
+        from vllm.v1.worker.gpu.attn_utils import (
+            _allocate_kv_cache_with_offloading,
+            _reshape_kv_cache,
+        )
+
+        ktc = self.vllm_config.kv_transfer_config
+        num_gpu_buffer_layers = (
+            ktc.get_from_extra_config("num_gpu_buffer_layers", 2)
+            if ktc is not None else 2
+        )
+
+        # Allocate raw tensors: small GPU buffer + full CPU backing
+        gpu_raw, cpu_raw = _allocate_kv_cache_with_offloading(
+            kv_cache_config, self.device, num_gpu_buffer_layers,
+        )
+
+        # Reshape to the attention backend's expected layout
+        # Use the model runner's reshape method which handles kernel_block_sizes
+        gpu_kv_caches = self._reshape_kv_cache_tensors(
+            kv_cache_config, gpu_raw, kernel_block_sizes,
+        )
+        cpu_kv_caches = self._reshape_kv_cache_tensors(
+            kv_cache_config, cpu_raw, kernel_block_sizes,
+        )
+
+        # Store CPU caches for later registration with the connector
+        self._cpu_kv_caches = cpu_kv_caches
+
+        # Set up cross-layer KV cache sharing
+        for layer_name, target_layer_name in self.shared_kv_cache_layers.items():
+            logger.debug("%s reuses KV cache of %s", layer_name, target_layer_name)
+            gpu_kv_caches[layer_name] = gpu_kv_caches[target_layer_name]
+            cpu_kv_caches[layer_name] = cpu_kv_caches[target_layer_name]
+
+        num_attn_module = (
+            2 if self.model_config.hf_config.model_type == "longcat_flash" else 1
+        )
+        bind_kv_cache(
+            gpu_kv_caches,
+            self.compilation_config.static_forward_context,
+            self.kv_caches,
+            num_attn_module,
+        )
+        return gpu_kv_caches
 
     def maybe_add_kv_sharing_layers_to_kv_cache_groups(
         self, kv_cache_config: KVCacheConfig
@@ -5719,7 +5784,17 @@ class GPUModelRunner(
                     self.cross_layers_kv_cache, self.cross_layers_attn_backend
                 )
             else:
-                kv_transfer_group.register_kv_caches(kv_caches)
+                # In full_offload mode, also pass CPU backing tensors
+                if (
+                    hasattr(kv_transfer_group, "_full_offload")
+                    and kv_transfer_group._full_offload
+                    and hasattr(self, "_cpu_kv_caches")
+                ):
+                    kv_transfer_group.register_kv_caches_with_offloading(
+                        kv_caches, self._cpu_kv_caches
+                    )
+                else:
+                    kv_transfer_group.register_kv_caches(kv_caches)
             kv_transfer_group.set_host_xfer_buffer_ops(copy_kv_blocks)
 
         if self.model_config.enable_return_routed_experts:
