@@ -3,14 +3,20 @@ set -e
 
 # Parse command line arguments
 ENABLE_NSYS=false
+FROM_SOURCE=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --enable-nsys)
             ENABLE_NSYS=true
             shift
             ;;
+        --from-source)
+            FROM_SOURCE=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [--enable-nsys]"
+            echo "Usage: $0 [--from-source] [--enable-nsys]"
+            echo "  --from-source    Install vllm in editable mode using precompiled wheels (no compilation)"
             echo "  --enable-nsys    Install Nsight Systems and enable non-admin profiling access"
             exit 0
             ;;
@@ -25,7 +31,30 @@ done
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12 --seed
 source .venv/bin/activate
-uv pip install vllm --torch-backend=auto
+if [ "$FROM_SOURCE" = true ]; then
+    # ---------------------------------------------------------------------------
+    # Build from source without compiling (using precompiled wheels)
+    # ---------------------------------------------------------------------------
+    # Downloads precompiled C++/CUDA binaries from https://wheels.vllm.ai for the
+    # merge-base commit of your branch with upstream main, then installs vllm in
+    # editable mode so local Python changes take effect immediately.
+    #
+    # If the auto-detected commit has no wheel (CI build failure), override with
+    # VLLM_PRECOMPILED_WHEEL_COMMIT. To check wheel availability:
+    #   curl -s https://wheels.vllm.ai/<commit>/vllm/metadata.json
+    #   curl -s https://wheels.vllm.ai/nightly/vllm/metadata.json
+    #
+    # Useful env vars:
+    #   VLLM_PRECOMPILED_WHEEL_COMMIT   - full 40-char hash (must exist on upstream main)
+    #   VLLM_PRECOMPILED_WHEEL_VARIANT  - e.g. cu129, cu130 (default: auto-detected)
+    #   VLLM_PRECOMPILED_WHEEL_LOCATION - direct URL/path to a .whl file (skips detection)
+    # ---------------------------------------------------------------------------
+    echo "Installing vllm from source (editable) with precompiled wheels..."
+    VLLM_PRECOMPILED_WHEEL_COMMIT=${VLLM_PRECOMPILED_WHEEL_COMMIT:-04a9e064db4dcf57519f1333796ba7face46248b} \
+        VLLM_USE_PRECOMPILED=1 uv pip install --editable .
+else
+    uv pip install vllm --torch-backend=auto
+fi
 
 if [ "$ENABLE_NSYS" = true ]; then
     echo "Installing Nsight Systems..."
