@@ -111,6 +111,7 @@ def parse_args():
         action="store_true",
         default=False,
         help="If set, do not partially schedule multimodal items when chunked prefill is enabled."
+    )
 
     parser.add_argument(
         "--scheduler_cls",
