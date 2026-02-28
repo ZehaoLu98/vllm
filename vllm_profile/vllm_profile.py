@@ -7,6 +7,7 @@ import os
 from vllm import LLM, SamplingParams
 from prompt_loader import load_prompts, get_default_prompts_path
 from util import parse_human_readable_int, parse_args
+from vllm.config import KVTransferConfig
 
 enable_builtin_profiling = False
 
@@ -56,6 +57,15 @@ def main():
     else:
         profiler_config = None
 
+    ktc = KVTransferConfig(
+        kv_connector="LMCacheConnectorV1",
+        kv_role="kv_both",
+        kv_connector_extra_config={
+            "full_offload": True,
+            "num_gpu_buffer_layers": 2,   # optional, default 2
+        },
+    )
+
     # Create an LLM with SchedulerConfig parameters
     llm = LLM(
         model="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
@@ -80,6 +90,7 @@ def main():
         async_scheduling=args.async_scheduling,
         stream_interval=args.stream_interval,
         disable_log_stats=False,
+        kv_transfer_config=ktc,
     )
 
     if enable_builtin_profiling:
