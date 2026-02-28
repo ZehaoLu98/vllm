@@ -6,7 +6,6 @@ from typing import Any, cast
 import torch
 
 from vllm.config import VllmConfig, get_layers_from_vllm_config
-from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.v1.attention.backend import AttentionBackend, CommonAttentionMetadata
 from vllm.v1.kv_cache_interface import (
@@ -16,8 +15,6 @@ from vllm.v1.kv_cache_interface import (
     UniformTypeKVCacheSpecs,
 )
 from vllm.v1.worker.utils import AttentionGroup, bind_kv_cache
-
-logger = init_logger(__name__)
 
 
 def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
@@ -144,88 +141,6 @@ def _reshape_kv_cache(
             raw_tensor = raw_tensor.view(kv_cache_shape)
             kv_caches[layer_name] = raw_tensor.permute(*inv_order)
     return kv_caches
-
-
-def _allocate_kv_cache_with_offloading(
-    kv_cache_config: KVCacheConfig,
-    gpu_device: torch.device,
-    num_gpu_buffer_layers: int = 2,
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-    """Allocate KV cache with per-layer CPU offloading.
-
-    Instead of allocating GPU memory for all layers, allocates a small GPU
-    buffer (for ``num_gpu_buffer_layers`` layers) and pinned CPU memory for
-    all layers.  GPU buffer slots are assigned per ``KVCacheTensor`` group
-    via round-robin (``tensor_idx % num_gpu_buffer_layers``).
-
-    Layers within the same ``KVCacheTensor.shared_by`` group share both the
-    same GPU buffer slot and the same CPU backing tensor (matching the
-    existing non-offloading behaviour where they share a single GPU tensor).
-
-    Returns:
-        A tuple of (gpu_buffer_raw_tensors, cpu_backing_raw_tensors).
-        Both are dicts mapping layer_name -> raw int8 tensor.
-    """
-    from vllm.utils.platform_utils import is_pin_memory_available
-    pin_memory = is_pin_memory_available()
-
-    gpu_buffer_raw: dict[str, torch.Tensor] = {}
-    cpu_backing_raw: dict[str, torch.Tensor] = {}
-
-    # Pre-create GPU buffer pools keyed by tensor size.
-    # Each pool has ``num_gpu_buffer_layers`` tensors.
-    size_to_gpu_buffers: dict[int, list[torch.Tensor]] = {}
-
-    for tensor_idx, kv_cache_tensor in enumerate(
-        kv_cache_config.kv_cache_tensors
-    ):
-        size = kv_cache_tensor.size
-
-        # Create GPU buffer slots for this tensor size if not done yet.
-        if size not in size_to_gpu_buffers:
-            size_to_gpu_buffers[size] = [
-                torch.zeros(size, dtype=torch.int8, device=gpu_device)
-                for _ in range(num_gpu_buffer_layers)
-            ]
-
-        slot = tensor_idx % num_gpu_buffer_layers
-        gpu_tensor = size_to_gpu_buffers[size][slot]
-
-        # CPU backing: one tensor per KVCacheTensor group (shared by all
-        # layers in ``shared_by``).
-        cpu_tensor = torch.zeros(
-            size, dtype=torch.int8, device="cpu", pin_memory=pin_memory,
-        )
-
-        # All layers in ``shared_by`` point to the same GPU buffer and
-        # CPU tensor, mirroring the non-offloading allocation.
-        for layer_name in kv_cache_tensor.shared_by:
-            gpu_buffer_raw[layer_name] = gpu_tensor
-            cpu_backing_raw[layer_name] = cpu_tensor
-
-    # Verify all layers covered
-    layer_names = set()
-    for group in kv_cache_config.kv_cache_groups:
-        for layer_name in group.layer_names:
-            layer_names.add(layer_name)
-    assert layer_names == set(gpu_buffer_raw.keys()), (
-        "Some layers are not correctly initialized for offloading"
-    )
-
-    # De-duplicate for accounting (multiple layer names can point to the
-    # same physical tensor).
-    unique_gpu = {id(t): t for t in gpu_buffer_raw.values()}
-    unique_cpu = {id(t): t for t in cpu_backing_raw.values()}
-    total_gpu_bytes = sum(t.numel() for t in unique_gpu.values())
-    total_cpu_bytes = sum(t.numel() for t in unique_cpu.values())
-    logger.info(
-        "KV cache offloading: GPU buffer = %s (%d buffer layers), "
-        "CPU backing store = %s (%d tensor groups)",
-        format_gib(total_gpu_bytes), num_gpu_buffer_layers,
-        format_gib(total_cpu_bytes), len(unique_cpu),
-    )
-
-    return gpu_buffer_raw, cpu_backing_raw
 
 
 def init_kv_cache(

@@ -69,11 +69,6 @@ class LMCacheKVEvents(KVConnectorKVEvents):
         return f"<LMCacheKVEvents events={self.get_all_events()}>"
 
 
-class _FullOffloadConnectorMetadata(KVConnectorMetadata):
-    """Minimal metadata that enables the @maybe_transfer_kv_layer hooks."""
-    pass
-
-
 class LMCacheConnectorV1(KVConnectorBase_V1):
     def __init__(
         self,
@@ -85,50 +80,27 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
             vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
         assert vllm_config.kv_transfer_config is not None
-
-        # Check if full_offload mode is requested
-        self._full_offload = vllm_config.kv_transfer_config.get_from_extra_config(
-            "full_offload", False
+        use_native = vllm_config.kv_transfer_config.get_from_extra_config(
+            "use_native", False
         )
-        self._full_offload_engine = None
+        if use_native:
+            logger.info("Initializing native LMCache connector")
+            # lazy import
+            from vllm.distributed.kv_transfer.kv_connector.v1 import lmcache_integration
 
-        if self._full_offload:
-            logger.info("Initializing LMCache connector in full_offload mode")
-            from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration.full_offload import (  # noqa: E501
-                FullOffloadEngine,
-            )
+            _adapter = lmcache_integration.vllm_v1_adapter
 
-            num_gpu_buffer_layers = (
-                vllm_config.kv_transfer_config.get_from_extra_config(
-                    "num_gpu_buffer_layers", 2
-                )
-            )
-            self._full_offload_engine = FullOffloadEngine(
-                num_gpu_buffer_layers=num_gpu_buffer_layers,
-            )
-            self._lmcache_engine = None
+            cls = _adapter.LMCacheConnectorV1Impl
         else:
-            use_native = vllm_config.kv_transfer_config.get_from_extra_config(
-                "use_native", False
+            logger.info("Initializing latest dev LMCache connector")
+            # lazy import
+            from lmcache.integration.vllm.vllm_v1_adapter import (
+                LMCacheConnectorV1Impl as LMCacheConnectorLatestImpl,
             )
-            if use_native:
-                logger.info("Initializing native LMCache connector")
-                # lazy import
-                from vllm.distributed.kv_transfer.kv_connector.v1 import lmcache_integration
 
-                _adapter = lmcache_integration.vllm_v1_adapter
+            cls = LMCacheConnectorLatestImpl
 
-                cls = _adapter.LMCacheConnectorV1Impl
-            else:
-                logger.info("Initializing latest dev LMCache connector")
-                # lazy import
-                from lmcache.integration.vllm.vllm_v1_adapter import (
-                    LMCacheConnectorV1Impl as LMCacheConnectorLatestImpl,
-                )
-
-                cls = LMCacheConnectorLatestImpl
-
-            self._lmcache_engine = cls(vllm_config, role, self)
+        self._lmcache_engine = cls(vllm_config, role, self)
 
         self._kv_cache_events: LMCacheKVEvents | None = None
 
@@ -143,10 +115,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
         Args:
             kv_caches: dictionary of layer names, kv cache
         """
-        if self._full_offload:
-            # In full_offload mode, register_kv_caches is handled separately
-            # via register_kv_caches_with_offloading().
-            return
         if hasattr(self._lmcache_engine, "register_kv_caches"):
             self._lmcache_engine.register_kv_caches(kv_caches)
         else:
@@ -154,20 +122,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
                 "LMCache engine does not support register_kv_caches, "
                 "please check and use the latest version"
             )
-
-    def register_kv_caches_with_offloading(
-        self,
-        gpu_kv_caches: dict[str, torch.Tensor],
-        cpu_kv_caches: dict[str, torch.Tensor],
-    ) -> None:
-        """Register GPU buffer and CPU backing store for full_offload mode.
-
-        Args:
-            gpu_kv_caches: GPU buffer tensors (small, shared across layers).
-            cpu_kv_caches: CPU pinned memory tensors (one per layer).
-        """
-        assert self._full_offload and self._full_offload_engine is not None
-        self._full_offload_engine.register_kv_caches(gpu_kv_caches, cpu_kv_caches)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         """
@@ -184,10 +138,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
             the same.
 
         """
-        if self._full_offload:
-            assert self._full_offload_engine is not None
-            self._full_offload_engine.start_load_kv(forward_context, **kwargs)
-            return
         self._lmcache_engine.start_load_kv(forward_context, **kwargs)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
@@ -201,10 +151,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
         Args:
             layer_name: the name of that layer
         """
-        if self._full_offload:
-            assert self._full_offload_engine is not None
-            self._full_offload_engine.wait_for_layer_load(layer_name)
-            return
         self._lmcache_engine.wait_for_layer_load(layer_name)
 
     def save_kv_layer(
@@ -226,12 +172,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
             attn_metadata (AttentionMetadata): the attention metadata.
             **kwargs: additional arguments for the save operation.
         """
-        if self._full_offload:
-            assert self._full_offload_engine is not None
-            self._full_offload_engine.save_kv_layer(
-                layer_name, kv_layer, attn_metadata, **kwargs
-            )
-            return
         self._lmcache_engine.save_kv_layer(
             layer_name, kv_layer, attn_metadata, **kwargs
         )
@@ -244,10 +184,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
 
         This prevents overwrites of paged KV buffer before saving done.
         """
-        if self._full_offload:
-            assert self._full_offload_engine is not None
-            self._full_offload_engine.wait_for_save()
-            return
         self._lmcache_engine.wait_for_save()
 
     def get_finished(
@@ -264,8 +200,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
             The finished saves/sends req ids must belong to a set provided in a
             call to this method (this call or a prior one).
         """
-        if self._full_offload:
-            return None, None
         return self._lmcache_engine.get_finished(finished_req_ids)
 
     def get_block_ids_with_load_errors(self) -> set[int]:
@@ -276,8 +210,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
             Set of block IDs that encountered load errors.
             Empty set if no load errors occurred.
         """
-        if self._full_offload:
-            return set()
         method = getattr(self._lmcache_engine, "get_block_ids_with_load_errors", None)
         if callable(method):
             return method()
@@ -289,8 +221,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
         """
         Get the KV connector kv cache events collected during the last interval.
         """
-        if self._full_offload:
-            return None
 
         events = self._lmcache_engine.get_kv_events()  # type: ignore [attr-defined]
         if not events:
@@ -334,9 +264,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
-        if self._full_offload:
-            # No external cache to load from in full_offload mode
-            return None, False
         return self._lmcache_engine.get_num_new_matched_tokens(
             request, num_computed_tokens
         ), False
@@ -347,8 +274,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
         """
         Update KVConnector state after block allocation.
         """
-        if self._full_offload:
-            return
         self._lmcache_engine.update_state_after_alloc(request, num_external_tokens)
 
     def build_connector_meta(
@@ -363,11 +288,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
         """
-        if self._full_offload:
-            # Return a minimal metadata so that has_connector_metadata()
-            # returns True, which is required for the
-            # @maybe_transfer_kv_layer hooks to fire.
-            return _FullOffloadConnectorMetadata()
         return self._lmcache_engine.build_connector_meta(scheduler_output)
 
     def update_connector_output(self, connector_output: KVConnectorOutput):
@@ -378,8 +298,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
             connector_output (KVConnectorOutput): the worker-side
                 connectors output.
         """
-        if self._full_offload:
-            return
         # Get the KV events
         kv_cache_events = connector_output.kv_cache_events
         if not kv_cache_events or not isinstance(kv_cache_events, LMCacheKVEvents):
@@ -409,8 +327,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
             Optional KVTransferParams to be included in the request outputs
             returned by the engine.
         """
-        if self._full_offload:
-            return False, None
         return self._lmcache_engine.request_finished(request, block_ids)
 
     def take_events(self) -> Iterable["KVCacheEvent"]:
@@ -420,8 +336,6 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
         Yields:
             New KV cache events since the last call.
         """
-        if self._full_offload:
-            return
         if self._kv_cache_events is not None:
             self._kv_cache_events.aggregate()
             kv_cache_events = self._kv_cache_events.get_all_events()
