@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 from vllm import _custom_ops as ops
-from vllm.attention.layer import Attention
+from vllm.model_executor.layers.attention import Attention
 from vllm.config import VllmConfig, get_layers_from_vllm_config
 from vllm.distributed.kv_events import BlockRemoved, BlockStored, KVCacheEvent
 from vllm.distributed.kv_transfer.kv_connector.utils import yield_req_data
@@ -511,6 +511,9 @@ class SwapConnectorWorker:
         self._gpu_tensors: dict[str, torch.Tensor] = {}
         self._cpu_tensors: dict[str, torch.Tensor] = {}
         self._kv_dim_before_num_blocks: dict[str, bool] = {}
+        self._block_size_bytes: dict[str, int] = {}
+        # True when all layers share a single GPU tensor
+        self._single_tensor_mode: bool = False
 
         # CUDA streams for per-layer transfers
         self._load_stream: torch.cuda.Stream | None = None
@@ -527,6 +530,16 @@ class SwapConnectorWorker:
         Create per-layer CPU tensors and register handlers for bulk transfers.
         """
         layer_names = list(kv_caches.keys())
+
+        # Detect single-tensor mode: all layers share the same GPU tensor
+        gpu_ptrs = {t.data_ptr() for t in kv_caches.values()}
+        self._single_tensor_mode = (len(gpu_ptrs) == 1 and len(layer_names) > 1)
+        if self._single_tensor_mode:
+            logger.info(
+                "Single-tensor swap mode: %d layers share 1 GPU KV buffer",
+                len(layer_names),
+            )
+
         layers = get_layers_from_vllm_config(
             self.spec.vllm_config, Attention, layer_names
         )
@@ -535,11 +548,15 @@ class SwapConnectorWorker:
             for layer_name in layer_names
         }
 
-        # Register handlers for bulk transfers (prefix cache loads/stores)
-        for src_cls, dst_cls, handler in self.spec.get_handlers(
-            kv_caches, attn_backends
-        ):
-            self.worker.register_handler(src_cls, dst_cls, handler)
+        # Register handlers for bulk transfers (prefix cache loads/stores).
+        # Skip in single-tensor mode: bulk handlers assume per-layer GPU
+        # tensors and won't work with a shared buffer. The per-layer
+        # load/store cycle handles all transfers instead.
+        if not self._single_tensor_mode:
+            for src_cls, dst_cls, handler in self.spec.get_handlers(
+                kv_caches, attn_backends
+            ):
+                self.worker.register_handler(src_cls, dst_cls, handler)
 
         pin_memory = is_pin_memory_available()
         num_cpu_blocks = self.spec.num_blocks
@@ -580,14 +597,29 @@ class SwapConnectorWorker:
                 layer_name,
                 cpu_shape,
             )
-            self._cpu_tensors[layer_name] = torch.zeros(
+            cpu_tensor = torch.zeros(
                 cpu_shape,
                 dtype=gpu_tensor.dtype,
                 device="cpu",
                 pin_memory=pin_memory,
             )
+            self._cpu_tensors[layer_name] = cpu_tensor
+
+            # Compute block size in bytes for ops.swap_blocks (new 4-arg API).
+            # When kv_dim=True, shape is (2, num_blocks, ...) and we swap
+            # each K/V half separately via tensor[0]/tensor[1].
+            if self._kv_dim_before_num_blocks[layer_name]:
+                ref = cpu_tensor[0]
+            else:
+                ref = cpu_tensor
+            self._block_size_bytes[layer_name] = (
+                ref.element_size() * ref.stride(0)
+            )
 
     def handle_preemptions(self, preempted_req_ids: set[str]):
+        if self._single_tensor_mode:
+            return
+
         for job_id, transfer_spec in self._unsubmitted_store_jobs:
             success = self.worker.transfer_async(job_id, transfer_spec)
             assert success
@@ -600,6 +632,11 @@ class SwapConnectorWorker:
 
     def start_kv_transfers(self, metadata: SwapConnectorMetadata):
         """Submit deferred stores and start prefix cache loads."""
+        # In single-tensor mode, skip bulk transfers entirely.
+        # Per-layer load/store handles everything.
+        if self._single_tensor_mode:
+            return
+
         # Submit deferred store jobs from the previous step
         for job_id, transfer_spec in self._unsubmitted_store_jobs:
             success = self.worker.transfer_async(job_id, transfer_spec)
@@ -672,13 +709,14 @@ class SwapConnectorWorker:
         cpu_tensor = self._cpu_tensors[layer_name]
         gpu_tensor = self._gpu_tensors[layer_name]
         kv_dim = self._kv_dim_before_num_blocks[layer_name]
+        block_size_bytes = self._block_size_bytes[layer_name]
 
         with torch.cuda.stream(self._load_stream):
             if kv_dim:
-                ops.swap_blocks(cpu_tensor[0], gpu_tensor[0], src_to_dst_tensor)
-                ops.swap_blocks(cpu_tensor[1], gpu_tensor[1], src_to_dst_tensor)
+                ops.swap_blocks(cpu_tensor[0], gpu_tensor[0], block_size_bytes, src_to_dst_tensor)
+                ops.swap_blocks(cpu_tensor[1], gpu_tensor[1], block_size_bytes, src_to_dst_tensor)
             else:
-                ops.swap_blocks(cpu_tensor, gpu_tensor, src_to_dst_tensor)
+                ops.swap_blocks(cpu_tensor, gpu_tensor, block_size_bytes, src_to_dst_tensor)
 
         # Must synchronize: attention needs the data to be ready
         self._load_stream.synchronize()
@@ -737,13 +775,14 @@ class SwapConnectorWorker:
         cpu_tensor = self._cpu_tensors[layer_name]
         gpu_tensor = self._gpu_tensors[layer_name]
         kv_dim = self._kv_dim_before_num_blocks[layer_name]
+        block_size_bytes = self._block_size_bytes[layer_name]
 
         with torch.cuda.stream(self._store_stream):
             if kv_dim:
-                ops.swap_blocks(gpu_tensor[0], cpu_tensor[0], src_to_dst_tensor)
-                ops.swap_blocks(gpu_tensor[1], cpu_tensor[1], src_to_dst_tensor)
+                ops.swap_blocks(gpu_tensor[0], cpu_tensor[0], block_size_bytes, src_to_dst_tensor)
+                ops.swap_blocks(gpu_tensor[1], cpu_tensor[1], block_size_bytes, src_to_dst_tensor)
             else:
-                ops.swap_blocks(gpu_tensor, cpu_tensor, src_to_dst_tensor)
+                ops.swap_blocks(gpu_tensor, cpu_tensor, block_size_bytes, src_to_dst_tensor)
             # Record event for the load stream to wait on
             if self._store_event is None:
                 self._store_event = torch.Event()
@@ -758,6 +797,9 @@ class SwapConnectorWorker:
 
     def prepare_store_kv(self, metadata: SwapConnectorMetadata):
         """Prepare bulk store jobs for the scheduler's reqs_to_store."""
+        if self._single_tensor_mode:
+            return
+
         for req_id, transfer_spec in metadata.reqs_to_store.items():
             job_id = self._generate_job_id()
             self._jobs[job_id] = (req_id, True)
@@ -767,10 +809,15 @@ class SwapConnectorWorker:
     def get_finished(
         self, finished_req_ids: set[str]
     ) -> tuple[set[str], set[str]]:
+        # In single-tensor mode, no bulk jobs are submitted
+        if self._single_tensor_mode:
+            return set(), set()
+
         finished_sending = set()
         finished_recving = set()
-        for job_id, success in self.worker.get_finished():
-            assert success
+        for result in self.worker.get_finished():
+            assert result.success
+            job_id = result.job_id
             req_id, store = self._jobs.pop(job_id)
             if store:
                 req_jobs = self._store_jobs[req_id]

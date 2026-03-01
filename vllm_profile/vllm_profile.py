@@ -58,11 +58,11 @@ def main():
         profiler_config = None
 
     ktc = KVTransferConfig(
-        kv_connector="LMCacheConnectorV1",
+        kv_connector="SwapConnector",
         kv_role="kv_both",
         kv_connector_extra_config={
-            "full_offload": True,
-            "num_gpu_buffer_layers": 2,   # optional, default 2
+            "cpu_bytes_to_use": 128 * 1024 ** 3,  # 128 GiB of pinned CPU RAM for KV cache
+            "single_gpu_tensor": True,  # Only 1 layer's KV on GPU at a time
         },
     )
 

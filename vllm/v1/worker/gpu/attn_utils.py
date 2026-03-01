@@ -167,58 +167,6 @@ def build_slot_mappings_by_layer(
     return slot_mappings_by_layer
 
 
-def init_kv_cache_with_offloading(
-    runner_kv_caches: list[torch.Tensor],
-    forward_context: dict[str, Any],
-    kv_cache_config: KVCacheConfig,
-    attn_backends: dict[str, AttentionBackend],
-    gpu_device: torch.device,
-    num_gpu_buffer_layers: int = 2,
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-    """Initialize KV cache with per-layer CPU offloading.
-
-    Returns:
-        A tuple of (gpu_kv_caches, cpu_kv_caches), each mapping
-        layer_name -> reshaped KV cache tensor.
-    """
-    gpu_raw, cpu_raw = _allocate_kv_cache_with_offloading(
-        kv_cache_config, gpu_device, num_gpu_buffer_layers,
-    )
-    gpu_kv_caches = _reshape_kv_cache(kv_cache_config, gpu_raw, attn_backends)
-    cpu_kv_caches = _reshape_kv_cache(kv_cache_config, cpu_raw, attn_backends)
-
-    # Bind the GPU buffer tensors so attention layers can use them
-    bind_kv_cache(gpu_kv_caches, forward_context, runner_kv_caches)
-
-    return gpu_kv_caches, cpu_kv_caches
-
-
-def init_kv_cache_with_offloading(
-    runner_kv_caches: list[torch.Tensor],
-    forward_context: dict[str, Any],
-    kv_cache_config: KVCacheConfig,
-    attn_backends: dict[str, AttentionBackend],
-    gpu_device: torch.device,
-    num_gpu_buffer_layers: int = 2,
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-    """Initialize KV cache with per-layer CPU offloading.
-
-    Returns:
-        A tuple of (gpu_kv_caches, cpu_kv_caches), each mapping
-        layer_name -> reshaped KV cache tensor.
-    """
-    gpu_raw, cpu_raw = _allocate_kv_cache_with_offloading(
-        kv_cache_config, gpu_device, num_gpu_buffer_layers,
-    )
-    gpu_kv_caches = _reshape_kv_cache(kv_cache_config, gpu_raw, attn_backends)
-    cpu_kv_caches = _reshape_kv_cache(kv_cache_config, cpu_raw, attn_backends)
-
-    # Bind the GPU buffer tensors so attention layers can use them
-    bind_kv_cache(gpu_kv_caches, forward_context, runner_kv_caches)
-
-    return gpu_kv_caches, cpu_kv_caches
-
-
 def build_attn_metadata(
     attn_groups: list[list[AttentionGroup]],
     num_reqs: int,

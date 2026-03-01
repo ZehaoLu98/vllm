@@ -52,9 +52,16 @@ class CPUSwapSpec(OffloadingSpec):
         }
         assert len(page_sizes) == 1
         page_size_bytes = page_sizes.pop()
+
+        # Use actual layer count from groups (not len(kv_cache_tensors),
+        # which is 1 in single-GPU-tensor mode).
+        num_layers = sum(
+            len(g.layer_names)
+            for g in kv_cache_config.kv_cache_groups
+        )
         kv_bytes_per_block = (
             page_size_bytes
-            * len(kv_cache_config.kv_cache_tensors)
+            * num_layers
             * vllm_config.parallel_config.world_size
         )
         kv_bytes_per_offloaded_block = kv_bytes_per_block * (
@@ -67,8 +74,9 @@ class CPUSwapSpec(OffloadingSpec):
             else 0
         )
 
-        # Calculate the total number of GPU blocks that could be allocated.
-        # The CPU must be able to hold all of them.
+        # In single-GPU-tensor mode, all layers share one GPU tensor,
+        # so total_gpu_blocks is just the num_blocks from the config.
+        # In normal mode, sum across tensors.
         total_gpu_blocks = sum(
             kv_cache_tensor.size // page_size_bytes
             for kv_cache_tensor in kv_cache_config.kv_cache_tensors
@@ -79,6 +87,9 @@ class CPUSwapSpec(OffloadingSpec):
             total_gpu_blocks + block_size_factor - 1
         ) // block_size_factor
 
+        # In single-GPU-tensor mode, the GPU tensor is small (1 layer)
+        # and the CPU holds all layers' data. The assertion is naturally
+        # satisfied since num_blocks was computed from cpu_bytes_to_use.
         assert self.num_blocks >= required_offloaded_blocks, (
             f"CPU swap mode requires enough CPU memory to hold all KV cache. "
             f"CPU can hold {self.num_blocks} offloaded blocks but "
