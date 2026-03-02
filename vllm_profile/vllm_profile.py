@@ -61,7 +61,7 @@ def main():
         kv_connector="SwapConnector",
         kv_role="kv_both",
         kv_connector_extra_config={
-            "cpu_bytes_to_use": 128 * 1024 ** 3,  # 128 GiB of pinned CPU RAM for KV cache
+            "cpu_bytes_to_use": 64 * 1024 ** 3,  # 64 GiB of pinned CPU RAM for KV cache
             "single_gpu_tensor": True,  # Only 1 layer's KV on GPU at a time
         },
     )

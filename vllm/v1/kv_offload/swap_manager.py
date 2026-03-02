@@ -10,6 +10,7 @@ raises an error instead of evicting.
 from collections import OrderedDict
 from collections.abc import Iterable
 
+from vllm.logger import init_logger
 from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.kv_offload.abstract import (
     LoadStoreSpec,
@@ -18,6 +19,9 @@ from vllm.v1.kv_offload.abstract import (
     PrepareStoreOutput,
 )
 from vllm.v1.kv_offload.backend import Backend, BlockStatus
+
+
+logger = init_logger(__name__)
 
 
 class SwapManager(OffloadingManager):
@@ -55,6 +59,11 @@ class SwapManager(OffloadingManager):
             block.ref_cnt += 1
             blocks.append(block)
 
+        logger.debug(
+            "CPU SwapManager loading %d blocks (%.2f MiB) from CPU",
+            len(blocks),
+            len(blocks) * self.backend.block_size / (1 << 20),
+        )
         return self.backend.get_load_store_spec(block_hashes, blocks)
 
     def touch(self, block_hashes: Iterable[BlockHash]):
@@ -87,6 +96,15 @@ class SwapManager(OffloadingManager):
 
         # No eviction: assert we have enough free blocks
         num_free = self.backend.get_num_free_blocks()
+        bytes_per_block = self.backend.block_size
+        logger.debug(
+            "CPU SwapManager allocating %d blocks (%.2f MiB); "
+            "free before: %d blocks (%.2f GiB)",
+            len(block_hashes_to_store),
+            len(block_hashes_to_store) * bytes_per_block / (1 << 20),
+            num_free,
+            num_free * bytes_per_block / (1 << 30),
+        )
         assert num_free >= len(block_hashes_to_store), (
             f"CPU swap manager does not have enough free blocks to store "
             f"{len(block_hashes_to_store)} blocks. "
@@ -96,6 +114,15 @@ class SwapManager(OffloadingManager):
 
         blocks = self.backend.allocate_blocks(block_hashes_to_store)
         assert len(blocks) == len(block_hashes_to_store)
+
+        num_free_after = self.backend.get_num_free_blocks()
+        logger.debug(
+            "CPU SwapManager allocated %d blocks; "
+            "free after: %d blocks (%.2f GiB)",
+            len(blocks),
+            num_free_after,
+            num_free_after * bytes_per_block / (1 << 30),
+        )
 
         for block_hash, block in zip(block_hashes_to_store, blocks):
             self.blocks[block_hash] = block

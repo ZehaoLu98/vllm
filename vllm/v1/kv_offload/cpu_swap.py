@@ -98,14 +98,30 @@ class CPUSwapSpec(OffloadingSpec):
             f"{required_offloaded_blocks * kv_bytes_per_offloaded_block} bytes."
         )
 
+        gpu_kv_bytes = total_gpu_blocks * page_size_bytes * num_layers
+        cpu_bytes_allocated = self.num_blocks * kv_bytes_per_offloaded_block
         logger.info(
-            "CPU swap spec: %d CPU blocks available, %d required "
-            "(%.1f%% utilization)",
+            "CPU swap spec initialized:\n"
+            "  CPU blocks available : %d  (%.2f GiB)\n"
+            "  CPU blocks required  : %d  (%.2f GiB)\n"
+            "  CPU utilization      : %.1f%%\n"
+            "  Bytes per CPU block  : %d  (%.2f MiB)\n"
+            "  GPU KV cache size    : %.2f GiB  (%d blocks x %d layers)\n"
+            "  CPU KV cache size    : %.2f GiB  (configured: %d bytes)",
             self.num_blocks,
+            cpu_bytes_allocated / (1 << 30),
             required_offloaded_blocks,
+            required_offloaded_blocks * kv_bytes_per_offloaded_block / (1 << 30),
             100.0 * required_offloaded_blocks / self.num_blocks
             if self.num_blocks > 0
             else 0,
+            kv_bytes_per_offloaded_block,
+            kv_bytes_per_offloaded_block / (1 << 20),
+            gpu_kv_bytes / (1 << 30),
+            total_gpu_blocks,
+            num_layers,
+            cpu_bytes_allocated / (1 << 30),
+            int(cpu_bytes_to_use),
         )
 
         # scheduler-side

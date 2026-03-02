@@ -616,6 +616,29 @@ class SwapConnectorWorker:
                 ref.element_size() * ref.stride(0)
             )
 
+        # Summary log after all CPU tensors are registered
+        total_cpu_bytes = sum(
+            t.numel() * t.element_size() for t in self._cpu_tensors.values()
+        )
+        gpu_device = next(iter(kv_caches.values())).device
+        gpu_total = torch.cuda.get_device_properties(gpu_device).total_memory
+        gpu_reserved = torch.cuda.memory_reserved(gpu_device)
+        gpu_allocated = torch.cuda.memory_allocated(gpu_device)
+        gpu_free = gpu_total - gpu_reserved
+        logger.info(
+            "SwapConnector registered %d KV cache layer(s):\n"
+            "  CPU KV tensors total : %.2f GiB\n"
+            "  GPU total memory     : %.2f GiB\n"
+            "  GPU reserved memory  : %.2f GiB  (allocated: %.2f GiB)\n"
+            "  GPU free memory      : %.2f GiB",
+            len(self._cpu_tensors),
+            total_cpu_bytes / (1 << 30),
+            gpu_total / (1 << 30),
+            gpu_reserved / (1 << 30),
+            gpu_allocated / (1 << 30),
+            gpu_free / (1 << 30),
+        )
+
     def handle_preemptions(self, preempted_req_ids: set[str]):
         if self._single_tensor_mode:
             return
@@ -689,6 +712,14 @@ class SwapConnectorWorker:
                 unique_gpu.append(gpu_id)
                 unique_cpu.append(cpu_id)
 
+        transfer_bytes = len(unique_gpu) * self._block_size_bytes[layer_name]
+        logger.debug(
+            "SwapConnector CPU->GPU  layer=%-40s  blocks=%d  size=%.2f MiB",
+            layer_name,
+            len(unique_gpu),
+            transfer_bytes / (1 << 20),
+        )
+
         # Build src_to_dst mapping for ops.swap_blocks
         src_to_dst = np.column_stack(
             [
@@ -755,6 +786,14 @@ class SwapConnectorWorker:
                 seen.add(gpu_id)
                 unique_gpu.append(gpu_id)
                 unique_cpu.append(cpu_id)
+
+        transfer_bytes = len(unique_gpu) * self._block_size_bytes[layer_name]
+        logger.debug(
+            "SwapConnector GPU->CPU  layer=%-40s  blocks=%d  size=%.2f MiB",
+            layer_name,
+            len(unique_gpu),
+            transfer_bytes / (1 << 20),
+        )
 
         # Build src_to_dst mapping (GPU -> CPU)
         src_to_dst = np.column_stack(
