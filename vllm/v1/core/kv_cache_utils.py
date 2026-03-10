@@ -1145,93 +1145,10 @@ def get_kv_cache_config_from_groups(
                 KVCacheTensor(size=page_size * num_blocks, shared_by=shared_by)
             )
 
-    config = KVCacheConfig(
+    return KVCacheConfig(
         num_blocks=num_blocks,
         kv_cache_tensors=kv_cache_tensors,
         kv_cache_groups=kv_cache_groups,
-    )
-
-    # In single-GPU-tensor swap mode, all layers share 1 GPU KV cache tensor.
-    # num_blocks is determined by CPU capacity, not GPU.
-    config = _maybe_apply_single_gpu_tensor(vllm_config, config,
-                                            available_memory)
-
-    return config
-
-
-def _maybe_apply_single_gpu_tensor(
-    vllm_config: VllmConfig,
-    config: KVCacheConfig,
-    available_memory: int,
-) -> KVCacheConfig:
-    """
-    If single_gpu_tensor swap mode is enabled, replace the N per-layer
-    KVCacheTensors with a single shared tensor. num_blocks is capped by
-    both CPU capacity and available GPU memory.
-    """
-    kv_transfer_config = vllm_config.kv_transfer_config
-    if kv_transfer_config is None:
-        return config
-    extra = kv_transfer_config.kv_connector_extra_config or {}
-    if not extra.get("single_gpu_tensor", False):
-        return config
-
-    cpu_bytes_to_use = extra.get("cpu_bytes_to_use")
-    if not cpu_bytes_to_use:
-        raise ValueError(
-            "cpu_bytes_to_use must be set when single_gpu_tensor is enabled"
-        )
-    cpu_bytes_to_use = int(cpu_bytes_to_use)
-
-    # Collect all layer names and compute page size
-    all_layer_names: list[str] = []
-    for group in config.kv_cache_groups:
-        all_layer_names.extend(group.layer_names)
-    num_layers = len(all_layer_names)
-    assert num_layers > 0
-
-    # All tensors should have the same page size
-    page_sizes = set()
-    for group in config.kv_cache_groups:
-        page_sizes.add(group.kv_cache_spec.page_size_bytes)
-    assert len(page_sizes) == 1, (
-        "single_gpu_tensor mode requires uniform page sizes across groups"
-    )
-    page_size = page_sizes.pop()
-
-    # num_blocks determined by CPU capacity, capped by GPU memory.
-    # CPU holds all layers' data; GPU holds just 1 layer's worth.
-    cpu_num_blocks = int(cpu_bytes_to_use // (page_size * num_layers))
-    gpu_num_blocks = int(available_memory // page_size)
-    num_blocks = min(cpu_num_blocks, gpu_num_blocks)
-    assert num_blocks > 0, (
-        f"Cannot allocate any KV blocks. "
-        f"cpu_bytes_to_use={cpu_bytes_to_use} -> {cpu_num_blocks} blocks, "
-        f"available_gpu_memory={available_memory} -> {gpu_num_blocks} blocks, "
-        f"num_layers={num_layers}, page_size={page_size}"
-    )
-
-    bottleneck = "GPU" if gpu_num_blocks < cpu_num_blocks else "CPU"
-    logger.info(
-        "Single-GPU-tensor swap mode: %d blocks (limited by %s), "
-        "%d layers sharing 1 GPU tensor of %s, CPU backing %s",
-        num_blocks,
-        bottleneck,
-        num_layers,
-        format_gib(page_size * num_blocks),
-        format_gib(cpu_bytes_to_use),
-    )
-
-    # One GPU tensor shared by ALL layers
-    single_tensor = KVCacheTensor(
-        size=page_size * num_blocks,
-        shared_by=all_layer_names,
-    )
-
-    return KVCacheConfig(
-        num_blocks=num_blocks,
-        kv_cache_tensors=[single_tensor],
-        kv_cache_groups=config.kv_cache_groups,
     )
 
 

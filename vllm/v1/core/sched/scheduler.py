@@ -939,7 +939,7 @@ class Scheduler(SchedulerInterface):
         )
 
         with record_function_or_nullcontext(nvtx_label):
-            self._update_after_schedule(scheduler_output)
+                self._update_after_schedule(scheduler_output)
         return scheduler_output
 
     def _preempt_request(self, request: Request, timestamp: float) -> None:

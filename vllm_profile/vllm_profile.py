@@ -58,7 +58,7 @@ def main():
         profiler_config = None
 
     ktc = KVTransferConfig(
-        kv_connector="SwapConnector",
+        kv_connector="LMCacheConnectorV1",
         kv_role="kv_both",
         kv_connector_extra_config={
             "cpu_bytes_to_use": 64 * 1024 ** 3,  # 64 GiB of pinned CPU RAM for KV cache
