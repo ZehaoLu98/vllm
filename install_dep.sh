@@ -1,6 +1,63 @@
 #!/bin/bash
 set -e
 
+# =============================================================================
+# Benchmark Scenarios
+# =============================================================================
+#
+# After running this script, you can benchmark three scenarios:
+#
+# --- 1. Without CPU Offloading (baseline) ---
+#   # Terminal 1: Start the server
+#   vllm serve deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+#
+#   # Terminal 2: Run the benchmark
+#   vllm bench serve \
+#     --backend vllm \
+#     --model deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+#     --endpoint /v1/completions \
+#     --dataset-name random \
+#     --num-prompts 1000 --save-result \
+#     --result-dir "./vllm_profile/" \
+#     --result-filename "without_cpu_offloading" \
+#     --input-len 10000 --output-len 100
+#
+# --- 2. With CPU Offloading (model weights offloaded to CPU) ---
+#   # Terminal 1: Start the server with --cpu-offload-gb
+#   vllm serve deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+#     --cpu-offload-gb 10
+#
+#   # Terminal 2: Run the benchmark
+#   vllm bench serve \
+#     --backend vllm \
+#     --model deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+#     --endpoint /v1/completions \
+#     --dataset-name random \
+#     --num-prompts 1000 --save-result \
+#     --result-dir "./vllm_profile/" \
+#     --result-filename "with_cpu_offloading" \
+#     --input-len 10000 --output-len 100
+#
+# --- 3. With LMCache (KV cache offloaded to CPU via LMCache) ---
+#   # First install lmcache: pip install lmcache
+#
+#   # Terminal 1: Start the server with --kv-offloading-backend lmcache
+#   vllm serve deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+#     --kv-offloading-backend lmcache
+#
+#   # Terminal 2: Run the benchmark
+#   vllm bench serve \
+#     --backend vllm \
+#     --model deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+#     --endpoint /v1/completions \
+#     --dataset-name random \
+#     --num-prompts 1000 --save-result \
+#     --result-dir "./vllm_profile/" \
+#     --result-filename "with_lmcache" \
+#     --input-len 10000 --output-len 100
+#
+# =============================================================================
+
 # Parse command line arguments
 ENABLE_NSYS=false
 FROM_SOURCE=false
