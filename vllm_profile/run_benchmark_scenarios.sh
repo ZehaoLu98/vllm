@@ -79,6 +79,7 @@ start_server() {
 
     vllm serve "$MODEL" \
         --port "$PORT" \
+        --enable-prefix-caching \
         "${extra_args[@]}" \
         > "$RESULT_DIR/${scenario_name}_server.log" 2>&1 &
     SERVER_PID=$!
