@@ -39,11 +39,16 @@ set -e
 #     --input-len 10000 --output-len 100
 #
 # --- 3. With LMCache (KV cache offloaded to CPU via LMCache) ---
-#   # First install lmcache: pip install lmcache
+#   # First install lmcache from source (see below).
 #
 #   # Terminal 1: Start the server with --kv-offloading-backend lmcache
+#   # NOTE: --kv-offloading-size is required (GiB of CPU memory for KV cache).
+#   #       --disable-hybrid-kv-cache-manager is needed because LMCache
+#   #       does not yet support HMA (Hybrid Memory Allocation).
 #   vllm serve deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
-#     --kv-offloading-backend lmcache
+#     --kv-offloading-backend lmcache \
+#     --kv-offloading-size 50 \
+#     --disable-hybrid-kv-cache-manager
 #
 #   # Terminal 2: Run the benchmark
 #   vllm bench serve \
@@ -112,6 +117,17 @@ if [ "$FROM_SOURCE" = true ]; then
 else
     uv pip install vllm --torch-backend=auto
 fi
+
+# ---------------------------------------------------------------------------
+# Install lmcache from source
+# ---------------------------------------------------------------------------
+# Pre-built lmcache wheels are compiled against a specific PyTorch version.
+# If your PyTorch version differs (e.g. 2.10.0+cu128), the C extension will
+# fail with "undefined symbol: _ZN3c104cuda29c10_cuda_check_implementation...".
+# Building from source ensures lmcache is compiled against your exact PyTorch.
+# ---------------------------------------------------------------------------
+echo "Installing lmcache from source (compiling against current PyTorch)..."
+uv pip install "lmcache @ git+https://github.com/LMCache/LMCache.git" --no-build-isolation
 
 if [ "$ENABLE_NSYS" = true ]; then
     echo "Installing Nsight Systems..."
