@@ -20,22 +20,22 @@ from pathlib import Path
 class RadixNode:
     """A node in a compressed trie (radix tree)."""
 
-    __slots__ = ("label", "children", "prompt_indices")
+    __slots__ = ("label", "children", "prompt_data")
 
     def __init__(self, label=""):
         self.label = label
         self.children: dict[str, "RadixNode"] = {}
-        self.prompt_indices: list[int] = []
+        self.prompt_data: list[tuple[int, int]] = []
 
-    def insert(self, string: str, prompt_idx: int) -> None:
+    def insert(self, string: str, prompt_idx: int, desc_len: int) -> None:
         if not string:
-            self.prompt_indices.append(prompt_idx)
+            self.prompt_data.append((prompt_idx, desc_len))
             return
 
         fc = string[0]
         if fc not in self.children:
             node = RadixNode(string)
-            node.prompt_indices.append(prompt_idx)
+            node.prompt_data.append((prompt_idx, desc_len))
             self.children[fc] = node
             return
 
@@ -46,10 +46,10 @@ class RadixNode:
             common += 1
 
         if common == len(child.label):
-            child.insert(string[common:], prompt_idx)
+            child.insert(string[common:], prompt_idx, desc_len)
         elif common == len(string):
             split = RadixNode(string)
-            split.prompt_indices.append(prompt_idx)
+            split.prompt_data.append((prompt_idx, desc_len))
             child.label = child.label[common:]
             split.children[child.label[0]] = child
             self.children[fc] = split
@@ -58,20 +58,29 @@ class RadixNode:
             child.label = child.label[common:]
             split.children[child.label[0]] = child
             new_node = RadixNode(string[common:])
-            new_node.prompt_indices.append(prompt_idx)
+            new_node.prompt_data.append((prompt_idx, desc_len))
             split.children[string[common]] = new_node
             self.children[fc] = split
 
     def count_prompts(self) -> int:
-        n = len(self.prompt_indices)
+        n = len(self.prompt_data)
         for c in self.children.values():
             n += c.count_prompts()
         return n
 
+    def _all_desc_lens(self) -> list[int]:
+        lens = [dl for _, dl in self.prompt_data]
+        for c in self.children.values():
+            lens.extend(c._all_desc_lens())
+        return lens
+
     def to_dict(self) -> dict:
         d: dict = {"label": self.label, "count": self.count_prompts()}
-        if self.prompt_indices:
-            d["prompts"] = sorted(self.prompt_indices)
+        all_dl = self._all_desc_lens()
+        if all_dl:
+            d["min_desc_len"] = min(all_dl)
+        if self.prompt_data:
+            d["prompts"] = sorted(idx for idx, _ in self.prompt_data)
         if self.children:
             d["children"] = [
                 c.to_dict()
@@ -81,18 +90,18 @@ class RadixNode:
 
 
 def build_forest(prompts: list[dict]) -> list[dict]:
-    groups: dict[str, list[tuple[int, str]]] = {}
+    groups: dict[str, list[tuple[int, int, str]]] = {}
     for i, p in enumerate(prompts):
         sp = p["system_prompt"]
         groups.setdefault(sp, []).append(
-            (i, p["descriptive_text"] + p["query"])
+            (i, len(p["descriptive_text"]), p["descriptive_text"] + p["query"])
         )
 
     forest = []
     for sp in sorted(groups):
         root = RadixNode("")
-        for idx, text in groups[sp]:
-            root.insert(text, idx)
+        for idx, desc_len, text in groups[sp]:
+            root.insert(text, idx, desc_len)
         tree = {
             "label": sp,
             "count": root.count_prompts(),
@@ -141,26 +150,39 @@ def generate_html(forest: list[dict], prompts: list[dict]) -> str:
             _walk(ch, 1)
 
     # Render the tree nodes as HTML
-    def render_node(node, depth):
+    def render_node(node, depth, offset=0):
         label = node["label"]
         count = node["count"]
         has_children = "children" in node
         plist = node.get("prompts", [])
-        disp = _esc(_trunc(label, 80))
+        min_dl = node.get("min_desc_len", 0)
         full = _esc(label)
         tag_html = "".join(
             f'<span class="ptag">#{p}</span>' for p in plist
         )
 
+        # Color label by content type: descriptive_text vs query
+        label_end = offset + len(label)
+        if label_end <= min_dl:
+            lbl_html = f'<span class="lbl lbl-desc" title="{full}">{_esc(_trunc(label, 80))}</span>'
+        elif offset >= min_dl:
+            lbl_html = f'<span class="lbl lbl-query" title="{full}">{_esc(_trunc(label, 80))}</span>'
+        else:
+            sp = min_dl - offset
+            lbl_html = (
+                f'<span class="lbl lbl-desc" title="{full}">{_esc(_trunc(label[:sp], 40))}</span>'
+                f'<span class="lbl lbl-query">{_esc(_trunc(label[sp:], 40))}</span>'
+            )
+
         if has_children:
             n_children = len(node["children"])
             cls = "branch" if n_children > 1 else "chain"
-            inner = "\n".join(render_node(ch, depth + 1) for ch in node["children"])
+            inner = "\n".join(render_node(ch, depth + 1, offset + len(label)) for ch in node["children"])
             return (
                 f'<div class="nd {cls}" data-depth="{depth}">'
                 f'<div class="hdr" onclick="tog(this)">'
                 f'<span class="arrow">&#9654;</span>'
-                f'<span class="lbl" title="{full}">{disp}</span>'
+                f'{lbl_html}'
                 f'{tag_html}'
                 f'<span class="cnt">{count}</span>'
                 f'</div>'
@@ -171,7 +193,7 @@ def generate_html(forest: list[dict], prompts: list[dict]) -> str:
             return (
                 f'<div class="nd leaf" data-depth="{depth}">'
                 f'<span class="dot">\u25CF</span>'
-                f'<span class="lbl" title="{full}">{disp}</span>'
+                f'{lbl_html}'
                 f'{tag_html}'
                 f'</div>'
             )
@@ -225,9 +247,9 @@ h1{{color:#58a6ff;margin-bottom:4px;font-size:1.6rem}}
 .ch{{display:none;padding-left:4px}}
 .nd.open>.ch{{display:block}}
 .dot{{color:#3fb950;font-size:.6rem;margin-right:4px}}
-.lbl{{font-family:'Cascadia Code','Fira Code',monospace;font-size:.78rem;color:#c9d1d9;word-break:break-all}}
-.branch>.hdr>.lbl{{color:#d2a8ff}}
-.leaf>.lbl{{color:#a5d6ff}}
+.lbl{{font-family:'Cascadia Code','Fira Code',monospace;font-size:.78rem;word-break:break-all}}
+.lbl-desc{{color:#3fb950}}
+.lbl-query{{color:#d2a8ff}}
 .cnt{{font-size:.7rem;color:#484f58;margin-left:auto;padding-right:10px;flex-shrink:0;white-space:nowrap}}
 .ptag{{font-size:.65rem;background:#1f6feb33;color:#58a6ff;border-radius:3px;padding:0 5px;margin-left:2px;white-space:nowrap}}
 .legend{{margin-bottom:18px;display:flex;gap:16px;flex-wrap:wrap;font-size:.82rem}}
@@ -238,7 +260,7 @@ h1{{color:#58a6ff;margin-bottom:4px;font-size:1.6rem}}
 </head>
 <body>
 <h1>Prompt Forest &mdash; Radix Tree Visualization</h1>
-<p class="subtitle">Each path from root to leaf concatenates to: <b>system_prompt</b> + <b>descriptive_text</b> + " " + <b>query</b>.
+<p class="subtitle">Each path from root to leaf concatenates to: <b>system_prompt</b> + <b>descriptive_text</b> + <b>query</b>.
 Nodes with multiple children indicate prefix sharing between prompts.</p>
 
 <div class="stats">
@@ -251,8 +273,8 @@ Nodes with multiple children indicate prefix sharing between prompts.</p>
 
 <div class="legend">
   <span><span class="sw" style="background:#f0883e"></span> System prompt (root)</span>
-  <span><span class="sw" style="background:#d2a8ff"></span> Branch node (shared prefix)</span>
-  <span><span class="sw" style="background:#a5d6ff"></span> Leaf node (unique prompt)</span>
+  <span><span class="sw" style="background:#3fb950"></span> Descriptive text</span>
+  <span><span class="sw" style="background:#d2a8ff"></span> Query</span>
   <span><span class="sw" style="background:#58a6ff"></span> Prompt index tag</span>
 </div>
 

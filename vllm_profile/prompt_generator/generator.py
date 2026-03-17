@@ -11,7 +11,7 @@ Configuration file (YAML) example:
     - "You are a helpful assistant."
     - "You are a knowledgeable expert."
     - "You are a friendly chatbot."
-  descriptive_length: 200
+  initial_descriptive_length: 200
   query_length: 50
   system_prompt_length: 100   # max length used when picking system prompts
   warmup_count: 50
@@ -42,12 +42,14 @@ class GeneratorConfig:
         "You are a knowledgeable expert.",
         "You are a friendly chatbot.",
     ])
-    descriptive_length: int = 200
+    initial_descriptive_length: int = 200
+    max_descriptive_length: int = 0
     query_length: int = 50
     warmup_count: int = 50
     total_count: int = 500
     pick_from_hist_pctg: float = 0.3
     output_file: str = "prompts.json"
+    output_tokens: int = 100
 
 
 def load_config(config_path: str) -> GeneratorConfig:
@@ -104,20 +106,21 @@ def generate_descriptive_text(
 
     During warmup: always generate a new random descriptive text.
     After warmup: with probability `pick_from_hist_pctg`, pick from history
-                  (with a random length from 0 to descriptive_length);
+                  (with a random length from 0 to initial_descriptive_length);
                   otherwise generate a new random one.
     History is managed by the caller.
     """
     if is_warmup:
-        return generate_random_text(config.descriptive_length)
+        return generate_random_text(config.initial_descriptive_length)
 
     if random.random() < config.pick_from_hist_pctg and history:
         # Pick from history and optionally truncate to a random length
         picked = random.choice(history)
-        rand_len = random.randint(0, config.descriptive_length)
+        cap = config.max_descriptive_length if config.max_descriptive_length > 0 else len(picked)
+        rand_len = random.randint(0, min(len(picked), cap))
         return picked[:rand_len]
     else:
-        return generate_random_text(config.descriptive_length)
+        return generate_random_text(config.initial_descriptive_length)
 
 
 def generate_query(config: GeneratorConfig) -> str:
@@ -155,15 +158,24 @@ def generate_prompts(config: GeneratorConfig) -> List[dict]:
     return prompts
 
 
-def write_prompts(prompts: List[dict], output_file: str) -> None:
-    """Write the list of prompts to a JSON file."""
+def write_prompts(prompts: List[dict], output_file: str, output_tokens: int) -> None:
+    """Write the list of prompts to a JSON file and a JSONL file."""
     path = Path(output_file)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(path, "w") as f:
         json.dump(prompts, f, indent=2)
-
     print(f"Wrote {len(prompts)} prompts to {path}")
+
+    # Write JSONL file for vllm bench serve --dataset-name custom
+    jsonl_path = path.with_suffix(".jsonl")
+    with open(jsonl_path, "w") as f:
+        for p in prompts:
+            line = p["system_prompt"] + p["descriptive_text"] + p["query"]
+            json.dump({"prompt": line, "output_tokens": output_tokens},
+                      f, ensure_ascii=False)
+            f.write("\n")
+    print(f"Wrote {len(prompts)} prompts to {jsonl_path}")
 
 
 def main() -> None:
@@ -180,7 +192,14 @@ def main() -> None:
 
     config = load_config(args.config)
     prompts = generate_prompts(config)
-    write_prompts(prompts, config.output_file)
+    write_prompts(prompts, config.output_file, config.output_tokens)
+
+    # Write raw text file: one line per prompt, concatenating all three parts
+    raw_path = Path(config.output_file).with_suffix(".txt")
+    with open(raw_path, "w") as f:
+        for p in prompts:
+            f.write(p["system_prompt"] + p["descriptive_text"] + p["query"] + "\n")
+    print(f"Wrote {len(prompts)} raw prompts to {raw_path}")
 
 
 if __name__ == "__main__":

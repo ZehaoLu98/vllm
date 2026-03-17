@@ -35,9 +35,10 @@ CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-30}"
 HOST="localhost"
 PORT="${PORT:-8000}"
 BASE_URL="http://${HOST}:${PORT}"
+PROMPTS_FILE="./prompts.jsonl"  # Path to a prompts JSONL file (--dataset-name custom)
 
-# Prefix lengths: 0%, 10%, 20%, 30% of INPUT_LEN
-PREFIX_PERCENTS=(0 10 20 30 50 80 90 95)
+# Prefix lengths: 0%, 10%, 20%, 30% of INPUT_LEN  (used only for random dataset)
+PREFIX_PERCENTS=(10)
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -46,6 +47,7 @@ while [[ $# -gt 0 ]]; do
         --num-prompts) NUM_PROMPTS="$2"; shift 2 ;;
         --port) PORT="$2"; BASE_URL="http://${HOST}:${PORT}"; shift 2 ;;
         --cpu-offload-gb) CPU_OFFLOAD_GB="$2"; shift 2 ;;
+        --prompts-file) PROMPTS_FILE="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -54,6 +56,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --num-prompts N         Number of prompts (default: $NUM_PROMPTS)"
             echo "  --port PORT             Server port (default: $PORT)"
             echo "  --cpu-offload-gb GB     CPU offload size in GB (default: $CPU_OFFLOAD_GB)"
+            echo "  --prompts-file FILE     Path to JSONL prompts file (use --dataset-name custom)"
             echo "  -h, --help              Show this help message"
             exit 0
             ;;
@@ -132,9 +135,90 @@ get_prefix_cache_hit_rate() {
     fi
 }
 
+_collect_metrics_and_save() {
+    # Usage: _collect_metrics_and_save <scenario_name> <result_filename> <pre_queries> <pre_hits>
+    local scenario_name="$1" result_filename="$2" pre_queries="$3" pre_hits="$4"
+
+    local post_metrics
+    post_metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || true
+    local post_queries post_hits
+    post_queries=$(echo "$post_metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
+    post_hits=$(echo "$post_metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
+
+    local kv_cache_usage
+    kv_cache_usage=$(echo "$post_metrics" | grep -E '^vllm:kv_cache_usage\b' | awk '{print $2}')
+    if [ -z "$kv_cache_usage" ]; then
+        kv_cache_usage="N/A"
+    fi
+    local kv_cache_usage_pct
+    if [ "$kv_cache_usage" != "N/A" ]; then
+        kv_cache_usage_pct=$(awk "BEGIN {printf \"%.2f\", $kv_cache_usage * 100}")
+    else
+        kv_cache_usage_pct="N/A"
+    fi
+
+    local delta_queries delta_hits hit_rate
+    delta_queries=$((post_queries - pre_queries))
+    delta_hits=$((post_hits - pre_hits))
+    if [ "$delta_queries" -gt 0 ] 2>/dev/null; then
+        hit_rate=$(awk "BEGIN {printf \"%.2f\", ($delta_hits / $delta_queries) * 100}")
+    else
+        hit_rate="0.00"
+    fi
+
+    echo "  [${scenario_name}] Prefix cache hit rate: ${hit_rate}% (queries=${delta_queries}, hits=${delta_hits})"
+    echo "  [${scenario_name}] KV cache usage: ${kv_cache_usage_pct}%"
+    echo "  [${scenario_name}] Saved: ${RESULT_DIR}/${result_filename}.json"
+
+    if command -v python3 &>/dev/null && [ -f "$RESULT_DIR/${result_filename}.json" ]; then
+        python3 -c "
+import json, sys
+f = sys.argv[1]
+with open(f) as fh: d = json.load(fh)
+d['prefix_cache_hit_rate_pct'] = float(sys.argv[2])
+d['prefix_cache_queries'] = int(sys.argv[3])
+d['prefix_cache_hits'] = int(sys.argv[4])
+kv_usage = sys.argv[5]
+d['kv_cache_usage_pct'] = float(kv_usage) * 100 if kv_usage != 'N/A' else None
+with open(f, 'w') as fh: json.dump(d, fh, indent=2)
+" "$RESULT_DIR/${result_filename}.json" "$hit_rate" "$delta_queries" "$delta_hits" "$kv_cache_usage"
+    fi
+}
+
 run_benchmarks_for_scenario() {
     local scenario_name="$1"
 
+    if [ -n "$PROMPTS_FILE" ]; then
+        # ---- Custom prompts mode: single run using the provided JSONL ----
+        local result_filename="${scenario_name}_custom"
+
+        echo ""
+        echo "  [${scenario_name}] Running benchmark with custom prompts: $PROMPTS_FILE"
+
+        local pre_metrics
+        pre_metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || true
+        local pre_queries pre_hits
+        pre_queries=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
+        pre_hits=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
+
+        vllm bench serve \
+            --backend vllm \
+            --model "$MODEL" \
+            --endpoint "$ENDPOINT" \
+            --port "$PORT" \
+            --dataset-name custom \
+            --dataset-path "$PROMPTS_FILE" \
+            --num-prompts "$NUM_PROMPTS" \
+            --output-len "$OUTPUT_LEN" \
+            --save-result \
+            --result-dir "$RESULT_DIR" \
+            --result-filename "${result_filename}.json"
+
+        _collect_metrics_and_save "$scenario_name" "$result_filename" "$pre_queries" "$pre_hits"
+        return
+    fi
+
+    # ---- Random dataset mode: iterate over prefix percentages ----
     for pct in "${PREFIX_PERCENTS[@]}"; do
         local prefix_len=$((INPUT_LEN * pct / 100))
         local sampled_input_len=$((INPUT_LEN - prefix_len))
@@ -143,7 +227,6 @@ run_benchmarks_for_scenario() {
         echo ""
         echo "  [${scenario_name}] Running benchmark: prefix_len=${prefix_len} + sampled_input_len=${sampled_input_len} = ${INPUT_LEN} total (${pct}% prefix)"
 
-        # Record pre-benchmark cache counters
         local pre_metrics
         pre_metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || true
         local pre_queries pre_hits
@@ -164,53 +247,7 @@ run_benchmarks_for_scenario() {
             --result-dir "$RESULT_DIR" \
             --result-filename "${result_filename}.json"
 
-        # Compute per-run prefix cache hit rate (delta from pre-benchmark)
-        local post_metrics
-        post_metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || true
-        local post_queries post_hits
-        post_queries=$(echo "$post_metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
-        post_hits=$(echo "$post_metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
-
-        # Get KV cache usage (gauge, current value 0.0-1.0)
-        local kv_cache_usage
-        kv_cache_usage=$(echo "$post_metrics" | grep -E '^vllm:kv_cache_usage\b' | awk '{print $2}')
-        if [ -z "$kv_cache_usage" ]; then
-            kv_cache_usage="N/A"
-        fi
-        local kv_cache_usage_pct
-        if [ "$kv_cache_usage" != "N/A" ]; then
-            kv_cache_usage_pct=$(awk "BEGIN {printf \"%.2f\", $kv_cache_usage * 100}")
-        else
-            kv_cache_usage_pct="N/A"
-        fi
-
-        local delta_queries delta_hits hit_rate
-        delta_queries=$((post_queries - pre_queries))
-        delta_hits=$((post_hits - pre_hits))
-        if [ "$delta_queries" -gt 0 ] 2>/dev/null; then
-            hit_rate=$(awk "BEGIN {printf \"%.2f\", ($delta_hits / $delta_queries) * 100}")
-        else
-            hit_rate="0.00"
-        fi
-
-        echo "  [${scenario_name}] Prefix cache hit rate: ${hit_rate}% (queries=${delta_queries}, hits=${delta_hits})"
-        echo "  [${scenario_name}] KV cache usage: ${kv_cache_usage_pct}%"
-        echo "  [${scenario_name}] Saved: ${RESULT_DIR}/${result_filename}.json"
-
-        # Append hit rate and KV cache usage to the JSON result
-        if command -v python3 &>/dev/null && [ -f "$RESULT_DIR/${result_filename}.json" ]; then
-            python3 -c "
-import json, sys
-f = sys.argv[1]
-with open(f) as fh: d = json.load(fh)
-d['prefix_cache_hit_rate_pct'] = float(sys.argv[2])
-d['prefix_cache_queries'] = int(sys.argv[3])
-d['prefix_cache_hits'] = int(sys.argv[4])
-kv_usage = sys.argv[5]
-d['kv_cache_usage_pct'] = float(kv_usage) * 100 if kv_usage != 'N/A' else None
-with open(f, 'w') as fh: json.dump(d, fh, indent=2)
-" "$RESULT_DIR/${result_filename}.json" "$hit_rate" "$delta_queries" "$delta_hits" "$kv_cache_usage"
-        fi
+        _collect_metrics_and_save "$scenario_name" "$result_filename" "$pre_queries" "$pre_hits"
     done
 }
 
@@ -232,14 +269,14 @@ stop_server
 # ---------------------------------------------------------------------------
 # Scenario 2: With CPU Offloading
 # ---------------------------------------------------------------------------
-echo ""
-echo "============================================================"
-echo "  Scenario 2: CPU Offloading (${CPU_OFFLOAD_GB} GB)"
-echo "============================================================"
+# echo ""
+# echo "============================================================"
+# echo "  Scenario 2: CPU Offloading (${CPU_OFFLOAD_GB} GB)"
+# echo "============================================================"
 
-start_server "cpu_offload" --cpu-offload-gb "$CPU_OFFLOAD_GB"
-run_benchmarks_for_scenario "cpu_offload"
-stop_server
+# start_server "cpu_offload" --cpu-offload-gb "$CPU_OFFLOAD_GB"
+# run_benchmarks_for_scenario "cpu_offload"
+# stop_server
 
 # ---------------------------------------------------------------------------
 # Scenario 3: With LMCache
