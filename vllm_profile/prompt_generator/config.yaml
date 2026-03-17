@@ -1,0 +1,28 @@
+# Prompt Generator Configuration
+
+# List of system prompts to randomly select from
+system_prompts:
+  - "You are a helpful assistant."
+  - "You are a knowledgeable expert."
+  - "You are a friendly chatbot."
+
+# Maximum character length for system prompts (truncated if longer)
+system_prompt_length: 100
+
+# Character length of generated descriptive text
+descriptive_length: 200
+
+# Character length of generated query text
+query_length: 50
+
+# Number of initial prompts that always generate new descriptive text (building history)
+warmup_count: 50
+
+# Total number of prompts to generate
+total_count: 500
+
+# Probability (0.0–1.0) of reusing a descriptive text from history after warmup
+pick_from_hist_pctg: 0.3
+
+# Output JSON file path
+output_file: "prompts.json"
