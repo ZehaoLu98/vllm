@@ -27,8 +27,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ---------------------------------------------------------------------------
 MODEL="${MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-7B}"
 NUM_PROMPTS="${NUM_PROMPTS:-300}"
-INPUT_LEN=10000
 OUTPUT_LEN=100
+REQUEST_RATE="${REQUEST_RATE:-inf}"
 ENDPOINT="/v1/completions"
 RESULT_DIR="$SCRIPT_DIR/benchmark_results"
 CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-30}"
@@ -37,14 +37,12 @@ PORT="${PORT:-8000}"
 BASE_URL="http://${HOST}:${PORT}"
 PROMPTS_FILE="./prompts.jsonl"  # Path to a prompts JSONL file (--dataset-name custom)
 
-# Prefix lengths: 0%, 10%, 20%, 30% of INPUT_LEN  (used only for random dataset)
-PREFIX_PERCENTS=(10)
-
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         --model) MODEL="$2"; shift 2 ;;
         --num-prompts) NUM_PROMPTS="$2"; shift 2 ;;
+        --request-rate) REQUEST_RATE="$2"; shift 2 ;;
         --port) PORT="$2"; BASE_URL="http://${HOST}:${PORT}"; shift 2 ;;
         --cpu-offload-gb) CPU_OFFLOAD_GB="$2"; shift 2 ;;
         --prompts-file) PROMPTS_FILE="$2"; shift 2 ;;
@@ -54,6 +52,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --model MODEL           Model to benchmark (default: $MODEL)"
             echo "  --num-prompts N         Number of prompts (default: $NUM_PROMPTS)"
+            echo "  --request-rate RATE     Request rate in req/s (default: $REQUEST_RATE)"
             echo "  --port PORT             Server port (default: $PORT)"
             echo "  --cpu-offload-gb GB     CPU offload size in GB (default: $CPU_OFFLOAD_GB)"
             echo "  --prompts-file FILE     Path to JSONL prompts file (use --dataset-name custom)"
@@ -187,68 +186,33 @@ with open(f, 'w') as fh: json.dump(d, fh, indent=2)
 
 run_benchmarks_for_scenario() {
     local scenario_name="$1"
+    local result_filename="${scenario_name}_custom"
 
-    if [ -n "$PROMPTS_FILE" ]; then
-        # ---- Custom prompts mode: single run using the provided JSONL ----
-        local result_filename="${scenario_name}_custom"
+    echo ""
+    echo "  [${scenario_name}] Running benchmark with custom prompts: $PROMPTS_FILE"
 
-        echo ""
-        echo "  [${scenario_name}] Running benchmark with custom prompts: $PROMPTS_FILE"
+    local pre_metrics
+    pre_metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || true
+    local pre_queries pre_hits
+    pre_queries=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
+    pre_hits=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
 
-        local pre_metrics
-        pre_metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || true
-        local pre_queries pre_hits
-        pre_queries=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
-        pre_hits=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
+    vllm bench serve \
+        --backend vllm \
+        --model "$MODEL" \
+        --endpoint "$ENDPOINT" \
+        --port "$PORT" \
+        --dataset-name custom \
+        --dataset-path "$PROMPTS_FILE" \
+        --num-prompts "$NUM_PROMPTS" \
+        --output-len "$OUTPUT_LEN" \
+        --request-rate "$REQUEST_RATE" \
+        --disable-dataset-shuffle \
+        --save-result \
+        --result-dir "$RESULT_DIR" \
+        --result-filename "${result_filename}.json"
 
-        vllm bench serve \
-            --backend vllm \
-            --model "$MODEL" \
-            --endpoint "$ENDPOINT" \
-            --port "$PORT" \
-            --dataset-name custom \
-            --dataset-path "$PROMPTS_FILE" \
-            --num-prompts "$NUM_PROMPTS" \
-            --output-len "$OUTPUT_LEN" \
-            --save-result \
-            --result-dir "$RESULT_DIR" \
-            --result-filename "${result_filename}.json"
-
-        _collect_metrics_and_save "$scenario_name" "$result_filename" "$pre_queries" "$pre_hits"
-        return
-    fi
-
-    # ---- Random dataset mode: iterate over prefix percentages ----
-    for pct in "${PREFIX_PERCENTS[@]}"; do
-        local prefix_len=$((INPUT_LEN * pct / 100))
-        local sampled_input_len=$((INPUT_LEN - prefix_len))
-        local result_filename="${scenario_name}_prefix_${pct}pct"
-
-        echo ""
-        echo "  [${scenario_name}] Running benchmark: prefix_len=${prefix_len} + sampled_input_len=${sampled_input_len} = ${INPUT_LEN} total (${pct}% prefix)"
-
-        local pre_metrics
-        pre_metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || true
-        local pre_queries pre_hits
-        pre_queries=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
-        pre_hits=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
-
-        vllm bench serve \
-            --backend vllm \
-            --model "$MODEL" \
-            --endpoint "$ENDPOINT" \
-            --port "$PORT" \
-            --dataset-name random \
-            --num-prompts "$NUM_PROMPTS" \
-            --input-len "$sampled_input_len" \
-            --output-len "$OUTPUT_LEN" \
-            --random-prefix-len "$prefix_len" \
-            --save-result \
-            --result-dir "$RESULT_DIR" \
-            --result-filename "${result_filename}.json"
-
-        _collect_metrics_and_save "$scenario_name" "$result_filename" "$pre_queries" "$pre_hits"
-    done
+    _collect_metrics_and_save "$scenario_name" "$result_filename" "$pre_queries" "$pre_hits"
 }
 
 # Cleanup on exit
