@@ -91,7 +91,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv --python 3.12 --seed
+uv venv --python 3.12 --seed --managed-python
 source .venv/bin/activate
 if [ "$FROM_SOURCE" = true ]; then
     # ---------------------------------------------------------------------------
