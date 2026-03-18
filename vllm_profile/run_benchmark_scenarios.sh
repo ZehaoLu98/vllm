@@ -32,6 +32,9 @@ REQUEST_RATE="${REQUEST_RATE:-inf}"
 ENDPOINT="/v1/completions"
 RESULT_DIR="$SCRIPT_DIR/benchmark_results"
 CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-30}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-512}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-16384}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
 HOST="localhost"
 PORT="${PORT:-8000}"
 BASE_URL="http://${HOST}:${PORT}"
@@ -45,6 +48,9 @@ while [[ $# -gt 0 ]]; do
         --request-rate) REQUEST_RATE="$2"; shift 2 ;;
         --port) PORT="$2"; BASE_URL="http://${HOST}:${PORT}"; shift 2 ;;
         --cpu-offload-gb) CPU_OFFLOAD_GB="$2"; shift 2 ;;
+        --max-num-seqs) MAX_NUM_SEQS="$2"; shift 2 ;;
+        --max-num-batched-tokens) MAX_NUM_BATCHED_TOKENS="$2"; shift 2 ;;
+        --max-model-len) MAX_MODEL_LEN="$2"; shift 2 ;;
         --prompts-file) PROMPTS_FILE="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
@@ -55,6 +61,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --request-rate RATE     Request rate in req/s (default: $REQUEST_RATE)"
             echo "  --port PORT             Server port (default: $PORT)"
             echo "  --cpu-offload-gb GB     CPU offload size in GB (default: $CPU_OFFLOAD_GB)"
+            echo "  --max-num-seqs N        Max number of sequences (default: $MAX_NUM_SEQS)"
+            echo "  --max-num-batched-tokens N  Max batched tokens per iteration (default: $MAX_NUM_BATCHED_TOKENS)"
+            echo "  --max-model-len N       Max model context length (default: $MAX_MODEL_LEN)"
             echo "  --prompts-file FILE     Path to JSONL prompts file (use --dataset-name custom)"
             echo "  -h, --help              Show this help message"
             exit 0
@@ -82,6 +91,9 @@ start_server() {
     vllm serve "$MODEL" \
         --port "$PORT" \
         --enable-prefix-caching \
+        --max-num-seqs "$MAX_NUM_SEQS" \
+        --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
+        --max-model-len "$MAX_MODEL_LEN" \
         "${extra_args[@]}" \
         > "$RESULT_DIR/${scenario_name}_server.log" 2>&1 &
     SERVER_PID=$!
@@ -207,7 +219,6 @@ run_benchmarks_for_scenario() {
         --num-prompts "$NUM_PROMPTS" \
         --output-len "$OUTPUT_LEN" \
         --request-rate "$REQUEST_RATE" \
-        --disable-dataset-shuffle \
         --save-result \
         --result-dir "$RESULT_DIR" \
         --result-filename "${result_filename}.json"
@@ -255,7 +266,7 @@ if ! python -c "import lmcache" 2>/dev/null; then
     pip install lmcache
 fi
 
-start_server "lmcache" --kv-offloading-backend lmcache
+start_server "lmcache" --kv-offloading-backend lmcache --kv-offloading-size 100 --disable-hybrid-kv-cache-manager
 run_benchmarks_for_scenario "lmcache"
 stop_server
 
