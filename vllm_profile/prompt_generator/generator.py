@@ -45,6 +45,7 @@ class GeneratorConfig:
     initial_descriptive_length: int = 200
     max_descriptive_length: int = 0
     query_length: int = 50
+    system_prompt_length: int = 0
     warmup_count: int = 50
     total_count: int = 500
     pick_from_hist_pctg: float = 0.3
@@ -93,34 +94,19 @@ def generate_random_text(length: int) -> str:
 
 
 def pick_system_prompt(config: GeneratorConfig) -> str:
-    """Pick a random system prompt from the configured list."""
-    return random.choice(config.system_prompts)
+    """Pick a random system prompt, truncated to system_prompt_length.
 
-
-def generate_descriptive_text(
-    config: GeneratorConfig,
-    history: set[str],
-    is_warmup: bool,
-) -> str:
-    """Generate or retrieve a descriptive text.
-
-    During warmup: always generate a new random descriptive text.
-    After warmup: with probability `pick_from_hist_pctg`, pick from history
-                  (with a random length from 0 to initial_descriptive_length);
-                  otherwise generate a new random one.
-    History is managed by the caller.
+    If system_prompt_length is 0, returns an empty string.
     """
-    if is_warmup:
-        return generate_random_text(config.initial_descriptive_length)
+    if config.system_prompt_length == 0:
+        return ""
+    prompt = random.choice(config.system_prompts)
+    return prompt[:config.system_prompt_length]
 
-    if random.random() < config.pick_from_hist_pctg and history:
-        # Pick from history and optionally truncate to a random length
-        picked = random.choice(history)
-        cap = config.max_descriptive_length if config.max_descriptive_length > 0 else len(picked)
-        rand_len = random.randint(0, min(len(picked), cap))
-        return picked[:rand_len]
-    else:
-        return generate_random_text(config.initial_descriptive_length)
+
+def generate_descriptive_text(config: GeneratorConfig) -> str:
+    """Generate a new random descriptive text."""
+    return generate_random_text(config.initial_descriptive_length)
 
 
 def generate_query(config: GeneratorConfig) -> str:
@@ -139,20 +125,31 @@ def build_prompt(system_prompt: str, descriptive_text: str, query: str) -> dict:
 
 def generate_prompts(config: GeneratorConfig) -> List[dict]:
     """Generate all prompts according to the configuration."""
-    history: List[str] = []
+    # History stores tuples of (system_prompt, descriptive_text, query)
+    history: List[tuple[str, str, str]] = []
     prompts: List[dict] = []
 
     for i in range(config.total_count):
         is_warmup = i < config.warmup_count
 
-        system_prompt = pick_system_prompt(config)
-        descriptive_text = generate_descriptive_text(config, history, is_warmup)
-        query = generate_query(config)
+        if not is_warmup and history and random.random() < config.pick_from_hist_pctg:
+            # Pick a full prompt from history and truncate to a random length,
+            # but always keep at least the system prompt portion.
+            sys_p, desc_p, query_p = random.choice(history)
+            full = sys_p + desc_p + query_p
+            min_len = len(sys_p)
+            cap = config.max_descriptive_length if config.max_descriptive_length > 0 else len(full)
+            rand_len = random.randint(min_len, min(len(full), cap))
+            truncated = full[:rand_len]
+            prompt = build_prompt("", truncated, "")
+        else:
+            system_prompt = pick_system_prompt(config)
+            descriptive_text = generate_descriptive_text(config)
+            query = generate_query(config)
+            prompt = build_prompt(system_prompt, descriptive_text, query)
 
-        # Save concatenated descriptive text + query into history
-        history.append(descriptive_text + " " + query)
-
-        prompt = build_prompt(system_prompt, descriptive_text, query)
+        # Save the three parts into history
+        history.append((prompt["system_prompt"], prompt["descriptive_text"], prompt["query"]))
         prompts.append(prompt)
 
     return prompts
