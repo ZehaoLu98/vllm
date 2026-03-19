@@ -172,3 +172,12 @@ output_file: "prompts.json"
 
 # Number of output tokens per prompt (written into JSONL for vllm benchmark)
 output_tokens: 100
+
+# History range: limits which history entries can be picked from.
+# hist_range_size: number of most-recent history entries to pick from.
+#   0 means the whole history.
+hist_range_size: 0
+
+# Pick mode within the history range: "random" or "iterative".
+# "iterative" picks most-recently-inserted first and cycles through the range.
+pick_mode: "random"

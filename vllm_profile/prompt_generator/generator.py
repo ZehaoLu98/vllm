@@ -18,6 +18,8 @@ Configuration file (YAML) example:
   total_count: 500
   pick_from_hist_pctg: 0.3
   output_file: "prompts.json"
+  hist_range_size: 0           # number of most-recent history entries to pick from; 0 means whole history
+  pick_mode: "random"          # "random" or "iterative" (iterative picks most-recent first)
 
 Usage:
   python generator.py --config config.yaml
@@ -30,7 +32,7 @@ import string
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import yaml
 
@@ -51,6 +53,8 @@ class GeneratorConfig:
     pick_from_hist_pctg: float = 0.3
     output_file: str = "prompts.json"
     output_tokens: int = 100
+    hist_range_size: int = 0
+    pick_mode: str = "random"
 
 
 def load_config(config_path: str) -> GeneratorConfig:
@@ -123,33 +127,70 @@ def build_prompt(system_prompt: str, descriptive_text: str, query: str) -> dict:
     }
 
 
+def _get_history_range(
+    history: Dict[tuple, None],
+    range_size: int,
+) -> List[tuple]:
+    """Return the most recent *range_size* entries from history.
+
+    If range_size is 0 (default), the whole history is returned.
+    """
+    keys = list(history.keys())
+    if range_size <= 0 or range_size >= len(keys):
+        return keys
+    return keys[-range_size:]
+
+
 def generate_prompts(config: GeneratorConfig) -> List[dict]:
     """Generate all prompts according to the configuration."""
-    # History stores tuples of (system_prompt, descriptive_text, query)
-    history: List[tuple[str, str, str]] = []
+    # History is an ordered set (dict preserving insertion order, no duplicates).
+    # Keys are (system_prompt, descriptive_text, query) tuples.
+    history: Dict[tuple[str, str, str], None] = {}
     prompts: List[dict] = []
+
+    # For iterative mode: a separate list to iterate through,
+    # ordered most-recently-inserted first.
+    iter_list: List[tuple[str, str, str]] = []
 
     for i in range(config.total_count):
         is_warmup = i < config.warmup_count
 
         if not is_warmup and history and random.random() < config.pick_from_hist_pctg:
-            # Pick a full prompt from history and truncate to a random length,
-            # but always keep at least the system prompt portion.
-            sys_p, desc_p, query_p = random.choice(history)
-            full = sys_p + desc_p + query_p
-            min_len = len(sys_p)
-            cap = config.max_descriptive_length if config.max_descriptive_length > 0 else len(full)
-            rand_len = random.randint(min_len, min(len(full), cap))
-            truncated = full[:rand_len]
-            prompt = build_prompt("", truncated, "")
-        else:
-            system_prompt = pick_system_prompt(config)
-            descriptive_text = generate_descriptive_text(config)
-            query = generate_query(config)
-            prompt = build_prompt(system_prompt, descriptive_text, query)
+            hist_range = _get_history_range(
+                history, config.hist_range_size
+            )
 
-        # Save the three parts into history
-        history.append((prompt["system_prompt"], prompt["descriptive_text"], prompt["query"]))
+            if not hist_range:
+                # Range is empty – fall through to generate a new prompt
+                pass
+            else:
+                if config.pick_mode == "iterative":
+                    if not iter_list:
+                        # Refresh: most-recently-inserted first
+                        iter_list = list(reversed(hist_range))
+                    sys_p, desc_p, query_p = iter_list.pop(0)
+                else:
+                    # random (default)
+                    sys_p, desc_p, query_p = random.choice(hist_range)
+
+                full = sys_p + desc_p + query_p
+                min_len = len(sys_p)
+                cap = config.max_descriptive_length if config.max_descriptive_length > 0 else len(full)
+                rand_len = random.randint(min_len, min(len(full), cap))
+                truncated = full[:rand_len]
+                prompt = build_prompt("", truncated, "")
+                # Don't add history-picked prompts to history
+                prompts.append(prompt)
+                continue
+
+        system_prompt = pick_system_prompt(config)
+        descriptive_text = generate_descriptive_text(config)
+        query = generate_query(config)
+        prompt = build_prompt(system_prompt, descriptive_text, query)
+
+        # Only newly generated prompts are added to history (duplicates ignored)
+        entry = (prompt["system_prompt"], prompt["descriptive_text"], prompt["query"])
+        history.setdefault(entry, None)
         prompts.append(prompt)
 
     return prompts
