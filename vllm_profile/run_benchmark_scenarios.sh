@@ -35,6 +35,7 @@ CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-30}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-512}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-16384}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 HOST="localhost"
 PORT="${PORT:-8000}"
 BASE_URL="http://${HOST}:${PORT}"
@@ -51,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         --max-num-seqs) MAX_NUM_SEQS="$2"; shift 2 ;;
         --max-num-batched-tokens) MAX_NUM_BATCHED_TOKENS="$2"; shift 2 ;;
         --max-model-len) MAX_MODEL_LEN="$2"; shift 2 ;;
+        --gpu-memory-utilization) GPU_MEMORY_UTILIZATION="$2"; shift 2 ;;
         --prompts-file) PROMPTS_FILE="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
@@ -64,6 +66,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --max-num-seqs N        Max number of sequences (default: $MAX_NUM_SEQS)"
             echo "  --max-num-batched-tokens N  Max batched tokens per iteration (default: $MAX_NUM_BATCHED_TOKENS)"
             echo "  --max-model-len N       Max model context length (default: $MAX_MODEL_LEN)"
+            echo "  --gpu-memory-utilization F  Fraction of GPU memory for KV cache (default: $GPU_MEMORY_UTILIZATION)"
             echo "  --prompts-file FILE     Path to JSONL prompts file (use --dataset-name custom)"
             echo "  -h, --help              Show this help message"
             exit 0
@@ -94,6 +97,7 @@ start_server() {
         --max-num-seqs "$MAX_NUM_SEQS" \
         --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
         --max-model-len "$MAX_MODEL_LEN" \
+        --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
         "${extra_args[@]}" \
         > "$RESULT_DIR/${scenario_name}_server.log" 2>&1 &
     SERVER_PID=$!
@@ -125,25 +129,6 @@ stop_server() {
         wait "$SERVER_PID" 2>/dev/null || true
     fi
     SERVER_PID=""
-}
-
-get_prefix_cache_hit_rate() {
-    # Query Prometheus metrics from the vLLM server and compute hit rate.
-    # Returns "N/A" if metrics are unavailable.
-    local metrics
-    metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || { echo "N/A"; return; }
-
-    local queries hits
-    queries=$(echo "$metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
-    hits=$(echo "$metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
-
-    if [ -z "$queries" ] || [ "$queries" = "0" ]; then
-        echo "0.00% (queries=$queries, hits=$hits)"
-    else
-        local rate
-        rate=$(awk "BEGIN {printf \"%.2f\", ($hits / $queries) * 100}")
-        echo "${rate}% (queries=$queries, hits=$hits)"
-    fi
 }
 
 _collect_metrics_and_save() {
