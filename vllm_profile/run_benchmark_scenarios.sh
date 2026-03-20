@@ -132,14 +132,19 @@ stop_server() {
 }
 
 _collect_metrics_and_save() {
-    # Usage: _collect_metrics_and_save <scenario_name> <result_filename> <pre_queries> <pre_hits>
+    # Usage: _collect_metrics_and_save <scenario_name> <result_filename> <pre_queries> <pre_hits> <pre_ext_queries> <pre_ext_hits>
     local scenario_name="$1" result_filename="$2" pre_queries="$3" pre_hits="$4"
+    local pre_ext_queries="${5:-0}" pre_ext_hits="${6:-0}"
 
     local post_metrics
     post_metrics=$(curl -s "${BASE_URL}/metrics" 2>/dev/null) || true
     local post_queries post_hits
     post_queries=$(echo "$post_metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
     post_hits=$(echo "$post_metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
+
+    local post_ext_queries post_ext_hits
+    post_ext_queries=$(echo "$post_metrics" | grep -E '^vllm:external_prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
+    post_ext_hits=$(echo "$post_metrics" | grep -E '^vllm:external_prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
 
     local kv_cache_usage
     kv_cache_usage=$(echo "$post_metrics" | grep -E '^vllm:kv_cache_usage\b' | awk '{print $2}')
@@ -162,7 +167,17 @@ _collect_metrics_and_save() {
         hit_rate="0.00"
     fi
 
+    local delta_ext_queries delta_ext_hits ext_hit_rate
+    delta_ext_queries=$((post_ext_queries - pre_ext_queries))
+    delta_ext_hits=$((post_ext_hits - pre_ext_hits))
+    if [ "$delta_ext_queries" -gt 0 ] 2>/dev/null; then
+        ext_hit_rate=$(awk "BEGIN {printf \"%.2f\", ($delta_ext_hits / $delta_ext_queries) * 100}")
+    else
+        ext_hit_rate="0.00"
+    fi
+
     echo "  [${scenario_name}] Prefix cache hit rate: ${hit_rate}% (queries=${delta_queries}, hits=${delta_hits})"
+    echo "  [${scenario_name}] External prefix cache hit rate: ${ext_hit_rate}% (queries=${delta_ext_queries}, hits=${delta_ext_hits})"
     echo "  [${scenario_name}] KV cache usage: ${kv_cache_usage_pct}%"
     echo "  [${scenario_name}] Saved: ${RESULT_DIR}/${result_filename}.json"
 
@@ -176,8 +191,11 @@ d['prefix_cache_queries'] = int(sys.argv[3])
 d['prefix_cache_hits'] = int(sys.argv[4])
 kv_usage = sys.argv[5]
 d['kv_cache_usage_pct'] = float(kv_usage) * 100 if kv_usage != 'N/A' else None
+d['external_prefix_cache_hit_rate_pct'] = float(sys.argv[6])
+d['external_prefix_cache_queries'] = int(sys.argv[7])
+d['external_prefix_cache_hits'] = int(sys.argv[8])
 with open(f, 'w') as fh: json.dump(d, fh, indent=2)
-" "$RESULT_DIR/${result_filename}.json" "$hit_rate" "$delta_queries" "$delta_hits" "$kv_cache_usage"
+" "$RESULT_DIR/${result_filename}.json" "$hit_rate" "$delta_queries" "$delta_hits" "$kv_cache_usage" "$ext_hit_rate" "$delta_ext_queries" "$delta_ext_hits"
     fi
 }
 
@@ -193,6 +211,9 @@ run_benchmarks_for_scenario() {
     local pre_queries pre_hits
     pre_queries=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
     pre_hits=$(echo "$pre_metrics" | grep -E '^vllm:prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
+    local pre_ext_queries pre_ext_hits
+    pre_ext_queries=$(echo "$pre_metrics" | grep -E '^vllm:external_prefix_cache_queries_total\b' | awk '{s+=$2} END {print s+0}')
+    pre_ext_hits=$(echo "$pre_metrics" | grep -E '^vllm:external_prefix_cache_hits_total\b' | awk '{s+=$2} END {print s+0}')
 
     vllm bench serve \
         --backend vllm \
@@ -208,7 +229,7 @@ run_benchmarks_for_scenario() {
         --result-dir "$RESULT_DIR" \
         --result-filename "${result_filename}.json"
 
-    _collect_metrics_and_save "$scenario_name" "$result_filename" "$pre_queries" "$pre_hits"
+    _collect_metrics_and_save "$scenario_name" "$result_filename" "$pre_queries" "$pre_hits" "$pre_ext_queries" "$pre_ext_hits"
 }
 
 # Cleanup on exit
@@ -251,7 +272,7 @@ if ! python -c "import lmcache" 2>/dev/null; then
     pip install lmcache
 fi
 
-start_server "lmcache" --kv-offloading-backend lmcache --kv-offloading-size 100 --disable-hybrid-kv-cache-manager
+start_server "lmcache" --kv-offloading-backend lmcache --kv-offloading-size 120 --disable-hybrid-kv-cache-manager
 run_benchmarks_for_scenario "lmcache"
 stop_server
 
