@@ -771,35 +771,125 @@ knows which remote endpoint to talk to for which rank.
 ### End-to-end picture for one D-side request
 
 1. Router sends a request to the D engine with
-   `kv_transfer_params = {peer_engine_id, peer_block_ids, ...}` attached.
-2. D scheduler calls connector's `get_num_new_matched_tokens` → connector
-   says "all prompt tokens are remotely cached." Scheduler skips prefilling
-   them.
-3. D scheduler allocates local blocks via `update_state_after_alloc`, marks
-   the request as "loading from remote."
-4. D scheduler calls `build_connector_meta(scheduler_output)` — connector
-   emits a `KVConnectorMetadata` saying "load remote blocks A→local block
-   X, B→Y, ...". This is attached to `SchedulerOutput.kv_connector_metadata`.
-5. Executor's `execute_model` calls
-   `collective_rpc("execute_model", args=(scheduler_output,), kv_output_aggregator=...)`.
-6. Each D worker dequeues from `rpc_broadcast_mq`, enters its model runner,
-   which:
-   - `bind_connector_metadata` → `start_load_kv` (NIXL kicks off RDMA reads
-     from the P workers).
-   - Runs forward, eventually consuming the now-loaded blocks.
-   - `get_finished({completed_req_ids})` → per-step "these requests have
-     completed receiving."
-7. Each D worker writes its `ModelRunnerOutput` (with
-   `kv_connector_output.finished_recving = {...}`) into its response MQ.
-8. Executor reads outputs from all workers and runs
-   `KVOutputAggregator.aggregate` — only requests reported by all (or
-   `expected_finished_count`) workers end up in the final
-   `finished_recving`.
-9. Scheduler sees the finished set, calls `update_connector_output` on the
-   scheduler-side connector → connector knows the transfer is done,
-   request is "really" ready, decoding proceeds normally.
+   `kv_transfer_params = {peer_engine_id, peer_block_ids, ...}` attached
+   (carried on the request through to `Request.kv_transfer_params`).
+2. D scheduler calls the connector's `get_num_new_matched_tokens`
+   ([scheduler.py:611](../../vllm/v1/core/sched/scheduler.py#L611) →
+   [base.py:417](../../vllm/distributed/kv_transfer/kv_connector/v1/base.py#L417))
+   — connector says "all prompt tokens are remotely cached." Scheduler
+   skips prefilling them.
+3. D scheduler allocates local blocks and notifies the connector via
+   `update_state_after_alloc`
+   ([scheduler.py:749](../../vllm/v1/core/sched/scheduler.py#L749) →
+   [base.py:452](../../vllm/distributed/kv_transfer/kv_connector/v1/base.py#L452)),
+   then transitions the request to `WAITING_FOR_REMOTE_KVS`
+   ([scheduler.py:771](../../vllm/v1/core/sched/scheduler.py#L771)) so it
+   stays out of the running set until its KV lands.
+4. D scheduler calls `build_connector_meta(scheduler_output)`
+   ([scheduler.py:917](../../vllm/v1/core/sched/scheduler.py#L917) →
+   [base.py:473](../../vllm/distributed/kv_transfer/kv_connector/v1/base.py#L473))
+   — connector emits a `KVConnectorMetadata` saying "load remote blocks
+   A→local block X, B→Y, ...". This is attached to
+   `SchedulerOutput.kv_connector_metadata`. Note that this happens every
+   step regardless of whether the request is in the running set — that's
+   how a `WAITING_FOR_REMOTE_KVS` request still reaches the worker.
+5. Executor's `execute_model`
+   ([multiproc_executor.py:296-306](../../vllm/v1/executor/multiproc_executor.py#L296-L306))
+   calls `collective_rpc("execute_model", args=(scheduler_output,), kv_output_aggregator=...)`
+   ([multiproc_executor.py:329-397](../../vllm/v1/executor/multiproc_executor.py#L329-L397));
+   the broadcast message is enqueued onto `rpc_broadcast_mq` at
+   [multiproc_executor.py:363](../../vllm/v1/executor/multiproc_executor.py#L363).
+6. Each D `WorkerProc` dequeues the broadcast from its `rpc_broadcast_mq`
+   (see `WorkerProc.worker_busy_loop`,
+   [multiproc_executor.py:914-940](../../vllm/v1/executor/multiproc_executor.py#L914-L940)).
+   The message decodes to `(method_name="execute_model", args=(scheduler_output,))`;
+   the worker dispatches to `self.worker.execute_model(scheduler_output)`,
+   which in turn calls into the model runner. The runner wraps the forward
+   in the `_get_kv_connector_output` context manager
+   ([kv_connector_model_runner_mixin.py:93-128](../../vllm/v1/worker/kv_connector_model_runner_mixin.py#L93-L128)),
+   driving the connector through its full per-step lifecycle:
 
-The P side has the symmetric flow with `finished_sending` instead.
+   1. **`bind_connector_metadata(scheduler_output.kv_connector_metadata)`** —
+      the worker-side connector reads the `KVConnectorMetadata` that the
+      D scheduler attached in step 4. For this D request it now knows:
+      *for each local block `X` allocated above, pull from peer engine
+      `peer_engine_id`, peer rank `r`, remote block `A`*.
+   2. **`start_load_kv(forward_context)`** — the connector hands the
+      transfer list to its underlying transport. For NIXL, this enqueues a
+      batch of one-sided RDMA reads from the P workers' exposed KV memory
+      regions into this D worker's local KV cache pages. The call is
+      **non-blocking** — it returns as soon as the reads are posted; the
+      NIC moves the bytes in the background while the GPU is free to start
+      computing.
+   3. **Forward pass** — the model's *full* forward (all layers) runs on
+      whatever requests the scheduler put in the running set. **The forward
+      does not wait for KV transfers.** Loading and execution are decoupled
+      *across steps*: a request whose remote KV hasn't fully landed yet is
+      held by the scheduler in `WAITING_FOR_REMOTE_KVS` state and is simply
+      **not in this step's batch**
+      ([scheduler.py:2017-2061](../../vllm/v1/core/sched/scheduler.py#L2017-L2061));
+      it gets admitted in some later step, once `get_finished` (below)
+      reports its transfer done. Meanwhile, `start_load_kv` from this step
+      and prior steps is moving bytes in the background, completely
+      independently. `save_kv_layer` is invoked from inside each attention
+      layer as it computes (still part of the same forward), but is a
+      **no-op on the D side** (D has nothing to push out).
+   4. **`wait_for_save()`** — no-op on the D side; on the P side this is
+      where the worker would block until all of its outbound layer saves
+      have actually been pushed/exposed.
+   5. **`get_finished(scheduler_output.finished_req_ids)`** — the connector
+      polls per-request transfer state and returns two sets:
+      `(finished_sending, finished_recving)`. On the D side,
+      `finished_recving` contains the request IDs whose **entire** KV (all
+      layers × all blocks × all ranks this worker is responsible for) has
+      finished arriving *during this step*. **This is the only mechanism by
+      which the D scheduler learns that an async transfer has completed** —
+      the forward never blocked on the transfer, so without this report the
+      scheduler would never know a `WAITING_FOR_REMOTE_KVS` request became
+      ready. On the P side, `finished_sending` similarly tells the P
+      scheduler "your peer has finished pulling — safe to free these
+      blocks." A request that's still partway through stays out of both
+      sets; the counters in `KVOutputAggregator` carry its remaining count
+      into the next step.
+   6. **`get_block_ids_with_load_errors()`** — local block IDs whose RDMA
+      reads failed; these are reported up so the scheduler can reissue or
+      abort.
+
+   All of the above lands in a `KVConnectorOutput` which is attached to the
+   `ModelRunnerOutput` this worker is about to return.
+7. Each D worker writes its `ModelRunnerOutput` (with
+   `kv_connector_output.finished_recving = {...}`) into its
+   `worker_response_mq` via `WorkerProc.handle_output` →  `enqueue_output`
+   ([multiproc_executor.py:898-906](../../vllm/v1/executor/multiproc_executor.py#L898-L906),
+   [multiproc_executor.py:883](../../vllm/v1/executor/multiproc_executor.py#L883)).
+8. Executor reads outputs from all workers (because `kv_output_aggregator`
+   is non-`None`, `output_rank` is `None`, so it dequeues every rank's
+   response —
+   [multiproc_executor.py:350-357](../../vllm/v1/executor/multiproc_executor.py#L350-L357),
+   [multiproc_executor.py:365-385](../../vllm/v1/executor/multiproc_executor.py#L365-L385))
+   and runs `KVOutputAggregator.aggregate`
+   ([utils.py:48-158](../../vllm/distributed/kv_transfer/kv_connector/utils.py#L48-L158)).
+   Only requests reported by all (or `expected_finished_count`) workers
+   end up in the final `finished_recving`; partial counts persist in
+   `_recv_remaining_count` across steps.
+9. Scheduler sees the finished set in `_update_from_kv_xfer_finished`
+   ([scheduler.py:2063-2090](../../vllm/v1/core/sched/scheduler.py#L2063-L2090)),
+   which calls `connector.update_connector_output(...)`
+   ([base.py:487](../../vllm/distributed/kv_transfer/kv_connector/v1/base.py#L487))
+   on the scheduler-side connector and adds the IDs to
+   `finished_recving_kv_req_ids`. On the next scheduling pass,
+   `_update_waiting_for_remote_kv`
+   ([scheduler.py:2017-2061](../../vllm/v1/core/sched/scheduler.py#L2017-L2061))
+   caches the now-resident blocks and transitions the request out of
+   `WAITING_FOR_REMOTE_KVS`, making it eligible to enter the next forward.
+
+The P side has the symmetric flow with `finished_sending` instead — see
+`request_finished`
+([base.py:497](../../vllm/distributed/kv_transfer/kv_connector/v1/base.py#L497))
+and `finished_sending` handling at
+[scheduler.py:2087-2090](../../vllm/v1/core/sched/scheduler.py#L2087-L2090),
+where the P scheduler frees the request's blocks once its peer has
+confirmed the pull.
 
 ### What the MultiprocExecutor actually does for PD
 
