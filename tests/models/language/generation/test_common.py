@@ -3,6 +3,8 @@
 
 import pytest
 import torch
+from packaging.version import Version
+from transformers import __version__ as TRANSFORMERS_VERSION
 
 from vllm.platforms import current_platform
 
@@ -44,7 +46,7 @@ AITER_MODEL_LIST = [
         ),
         pytest.param(
             "openai-community/gpt2",  # gpt2
-            marks=[pytest.mark.core_model, pytest.mark.cpu_model],
+            marks=[pytest.mark.core_model],
         ),
         pytest.param("Milos/slovak-gpt-j-405M"),  # gptj
         pytest.param("bigcode/tiny_starcoder_py"),  # gpt_bigcode
@@ -98,9 +100,13 @@ AITER_MODEL_LIST = [
         pytest.param("bigcode/starcoder2-3b"),  # starcoder2
         pytest.param(
             "TitanML/tiny-mixtral",  # mixtral
-            marks=[pytest.mark.core_model, pytest.mark.cpu_model],
+            marks=[pytest.mark.core_model],
         ),
         pytest.param("swiss-ai/Apertus-8B-Instruct-2509"),  # apertus
+        pytest.param(
+            "naver-hyperclovax/HyperCLOVAX-SEED-Think-14B",  # hyperclovax
+            marks=[large_gpu_mark(min_gb=32)],
+        ),
     ],
 )
 @pytest.mark.parametrize("max_tokens", [32])
@@ -137,6 +143,15 @@ def test_models(
         # in parts of the operators
         pytest.skip(f"Skipping '{model}' model test with AITER kernel.")
 
+    if model == "bigcode/starcoder2-3b":
+        # Replace example.txt's Test1 (an NL prompt) with a code prompt:
+        # starcoder2-3b is a code model, so NL prompts give near-uniform
+        # digit logits where HF<->vLLM bf16 drift can reorder top-K.
+        example_prompts = list(example_prompts)
+        example_prompts[1] = (
+            "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - "
+        )
+
     with hf_runner(model) as hf_model:
         hf_outputs = hf_model.generate_greedy_logprobs_limit(
             example_prompts, max_tokens, num_logprobs
@@ -150,6 +165,16 @@ def test_models(
             )
             if prompt_embeds is not None:
                 embed = hf_model.model.get_input_embeddings()(token_ids)
+
+                if "gemma" in model.lower() and (
+                    Version(TRANSFORMERS_VERSION) < Version("5.3.0.dev0")
+                ):
+                    # For Gemma 1/2 models with Transformers 5.4.0+, the prompt
+                    # embeddings are normalised in `get_prompt_embeddings`,
+                    # like Gemma 3. For older versions, we need to manually normalise.
+                    embed_scale = hf_model.config.hidden_size**0.5
+                    normalizer = torch.tensor(embed_scale, dtype=embed.dtype)
+                    embed *= normalizer
 
                 # MiniCPM models apply scale_emb to embeddings internally.
                 # vLLM expects pre-scaled embeddings when using inputs_embeds.
