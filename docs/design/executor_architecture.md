@@ -916,7 +916,252 @@ coherent "who finished what" signal.
 
 ---
 
-## 7. Recommended reading order
+## 7. NIXL connector deep-dive
+
+Section 6 covered the abstract `KVConnector` contract and how the executor
+aggregates per-worker reports. This section walks through how the **NIXL
+connector** — the canonical disaggregated-PD implementation — actually
+moves bytes between P and D using NVIDIA NIXL one-sided RDMA.
+
+Source code: [vllm/distributed/kv_transfer/kv_connector/v1/nixl/](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/).
+
+### What NIXL is
+
+NIXL is a transport library for one-sided RDMA between accelerator memory
+regions. The connector wraps it through the `nixl_agent` Python class
+(`self.nixl_wrapper` in the code). Four primitives matter here:
+
+- **`register_memory(descs, backends)`** — pin a contiguous block of
+  VRAM/DRAM and expose its descriptors so a remote agent can address into
+  it.
+- **`prep_xfer_dlist(agent_name, descs)`** — precompute a descriptor table
+  (one entry per (block × layer × KV group) memory region) so future
+  transfers can refer to ranges by integer ID instead of re-describing
+  them every time.
+- **`make_prepped_xfer("READ"|"WRITE", ...)` + `transfer(handle)`** —
+  post a one-sided RDMA op over a `(local_descs_ids, remote_descs_ids)`
+  pair. Non-blocking; returns a handle.
+- **`check_xfer_state(handle)`** — poll; returns `"PROC"` (in flight),
+  `"DONE"`, or an error code.
+- **`send_notif` / `get_new_notifs`** — out-of-band agent-to-agent
+  messages (used for "I'm done reading, you can free" and for lease
+  heartbeats).
+
+With `kv_buffer_device="cuda"` the NIC DMAs directly between GPU memory
+pages via GPUDirect RDMA — the CPU is not in the data path.
+
+### The two halves in this codebase
+
+| Half | Lives in | Class |
+|---|---|---|
+| Scheduler-side | engine process, next to the scheduler | `NixlConnectorScheduler` ([scheduler.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/scheduler.py)) |
+| Worker-side | each `WorkerProc` | `NixlConnectorWorker` ([worker.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py)) |
+| Common entrypoint | both | `NixlConnector` ([connector.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/connector.py)) — thin dispatcher routing each `KVConnector` method to the right half based on `role` |
+
+The single `NixlConnector` class is constructed in both processes; it
+inspects its `role` arg (`SCHEDULER` or `WORKER`) and instantiates only
+the half it needs.
+
+### Initialization — register, then listen
+
+On the worker side, `register_kv_caches(kv_caches)`
+([worker.py:788](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L788))
+runs after the model has allocated its KV cache tensors. It:
+
+1. **Pins** every KV-cache memory region with NIXL via
+   `nixl_wrapper.register_memory(...)`
+   ([worker.py:960-962](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L960-L962))
+   — descriptors point at the raw GPU VRAM (or pinned CPU DRAM, see
+   "configuration modes" below). After this call the NIC can DMA into/out
+   of those pages.
+2. **Builds the local "src" transfer-side descriptor handle** via
+   `prep_xfer_dlist("NIXL_INIT_AGENT", descs)`
+   ([worker.py:984-986](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L984-L986)
+   → `register_local_xfer_handler` at
+   [worker.py:1184](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L1184)).
+3. **Publishes `NixlAgentMetadata`**
+   ([worker.py:989-994](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L989-L994),
+   dataclass at [metadata.py:42-53](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py#L42-L53))
+   — engine ID, raw agent metadata bytes from NIXL, KV base addresses,
+   `num_blocks`, block layout, attn backend, etc.
+
+Meanwhile the scheduler side starts a **ZMQ ROUTER listener** on
+`side_channel_host:side_channel_port`
+([scheduler.py:271-286](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/scheduler.py#L271-L286),
+`_nixl_handshake_listener` at
+[scheduler.py:289-321](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/scheduler.py#L289-L321)).
+This is the control-plane side channel — peers connect here to fetch the
+local agent metadata. No KV bytes flow through this channel.
+
+### Peer discovery — the side-channel handshake
+
+When a D worker sees a request whose `remote_engine_id` is one it hasn't
+talked to before, it kicks off `_background_nixl_handshake`
+([worker.py:745](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L745)),
+which calls `_nixl_handshake`
+([worker.py:473-547](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L473-L547)):
+
+1. ZMQ REQ-connects to `tcp://{remote_host}:{remote_port}` (the P
+   scheduler's listener).
+2. Sends `(GET_META_MSG, remote_rank)` for each remote rank this D worker
+   must read from (computed via
+   `transfer_topo.handshake_target_ranks(remote_tp_size)` at
+   [worker.py:500](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L500)).
+3. Receives a `NixlHandshakePayload`
+   ([metadata.py:57-71](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py#L57-L71))
+   wrapping a `compatibility_hash` and the actual `NixlAgentMetadata`
+   bytes. The hash gate
+   ([metadata.py:74-134](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py#L74-L134))
+   covers model arch, dtype, KV heads, attn backend, etc., so an
+   incompatible peer is rejected with a clear error rather than corrupting
+   data.
+4. Calls `nixl_wrapper.add_remote_agent(...)` so NIXL learns the remote's
+   QP info.
+5. Builds the **remote-side transfer-dlist** via
+   `prep_xfer_dlist(remote_agent_name, descs)`
+   ([worker.py:1402](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L1402))
+   — indexing into the remote's exposed KV memory.
+
+After this, both ends know each other's memory layout; a subsequent
+`make_prepped_xfer("READ", ...)` only needs to pass descriptor IDs.
+Handshakes happen lazily, per (D worker, P engine_id) pair, only once;
+subsequent requests targeting the same P engine reuse the cached
+`_remote_agents[engine_id]` mapping.
+
+### The data plane — one transfer per (D rank, P rank)
+
+The canonical D-side flow:
+
+1. **Scheduler queues the request.** When `update_state_after_alloc` runs
+   for a request with `do_remote_prefill=True`
+   ([scheduler.py:434-501](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/scheduler.py#L434-L501)),
+   the scheduler-side connector records it in
+   `_reqs_need_recv[req_id] = (request, local_block_ids)`
+   ([scheduler.py:486-489](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/scheduler.py#L486-L489)).
+2. **`build_connector_meta` packages it.** Every step
+   ([scheduler.py:538-573](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/scheduler.py#L538-L573))
+   the connector drains `_reqs_need_recv` into
+   `NixlConnectorMetadata.reqs_to_recv` (a `dict[req_id, ReqMeta]`,
+   [metadata.py:165-211](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py#L165-L211))
+   and attaches it to `SchedulerOutput.kv_connector_metadata`. After
+   draining, the dict resets — each request appears in metadata exactly
+   once.
+3. **Worker `start_load_kv` posts the READs.** For each entry in
+   `reqs_to_recv`
+   ([worker.py:1933-1968](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L1933-L1968)):
+    - If this D worker has never talked to the peer P engine, kick off
+      the handshake described above (and defer this request until
+      handshake completes via `_ready_requests`).
+    - Otherwise, call `_read_blocks_for_req` → `_read_blocks`
+      ([worker.py:2021-2104](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L2021-L2104),
+      [worker.py:2106-2244](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L2106-L2244))
+      once per remote rank this worker reads from. With homogeneous TP
+      this is one call per request (rank *i* pulls from rank *i*); with
+      heterogeneous TP it fans out.
+    - Each `_read_blocks` call computes a flat **descriptor-ID list**
+      enumerating every (block × layer × KV group) byte to transfer
+      ([worker.py:2202-2213](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L2202-L2213)),
+      then posts:
+
+      ```python
+      handle = nixl_wrapper.make_prepped_xfer(
+          "READ",
+          local_xfer_side_handle,  local_block_descs_ids,
+          remote_xfer_side_handle, remote_block_descs_ids,
+          notif_msg=notif_id,
+      )
+      nixl_wrapper.transfer(handle)
+      self._recving_transfers[req_id].append(handle)  # handles accumulate per req
+      ```
+
+      The `notif_id = f"{remote_req_id}:{D_world_size}"` is auto-sent to
+      the P side when the read completes, telling P "one D worker finished
+      reading; decrement count and free when all `D_world_size` have
+      reported."
+4. **`get_finished` polls.** Each step the worker calls
+   `_pop_done_transfers`
+   ([worker.py:1868-1913](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L1868-L1913)),
+   which iterates `_recving_transfers[req_id]`, runs `check_xfer_state`
+   on each handle, and only adds the request to the per-worker
+   `done_recving` set when **every** handle reports `DONE`. The (P-side)
+   `done_sending` set is built from `_get_new_notifs`
+   ([worker.py:1792](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L1792))
+   — incoming notifications from D workers that finished pulling.
+
+### Three-level completion gating (NIXL-specific)
+
+A D request only escapes `WAITING_FOR_REMOTE_KVS` after all three gates
+clear:
+
+| Level | What "all" means | Code |
+|---|---|---|
+| Bytes per handle | All (block × layer × group) descriptors in the dlist landed | `make_prepped_xfer` enumerates them; `check_xfer_state == "DONE"` only when all bytes land |
+| Handles per request per worker | All (D-rank → P-rank) transfers this worker is responsible for | `_pop_done_transfers` at [worker.py:1907-1909](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L1907-L1909) |
+| Workers per request | All `_expected_finished_count` D workers must report `done_recving` | `KVOutputAggregator.aggregate`, see section 6 |
+
+### Configuration modes — VRAM-direct vs CPU staging
+
+The connector supports two `kv_buffer_device` settings
+([worker.py:321-353](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L321-L353)):
+
+- **`cuda` (default)** — `nixl_memory_type = "VRAM"`. NIXL registers GPU
+  memory; transfers are GPUDirect RDMA, P GPU → D GPU, CPU not in the
+  data path.
+- **`cpu`** — `nixl_memory_type = "DRAM"`, `use_host_buffer = True`. NIXL
+  registers pinned CPU DRAM; KV is staged through a host buffer. After a
+  successful pull, `sync_recved_kv_to_device`
+  ([worker.py:1565](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L1565),
+  invoked from `get_finished` at
+  [worker.py:1742-1743](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L1742-L1743))
+  copies bytes up to GPU. Strictly slower; used only when the platform
+  can't register VRAM with NIXL.
+
+A pure CPU-inference setup (`device_type="cpu"`) skips the host-buffer
+indirection entirely — DRAM is already the source/dest.
+
+### Heterogeneous TP
+
+With TP sizes `P_tp != D_tp`, each D worker may need to read from a
+subset of P workers (or slice K/V across multiple P workers). The mapping
+is computed in
+[tp_mapping.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py)
+and surfaced via `transfer_topo.handshake_target_ranks(remote_tp_size)`
+([worker.py:500](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py#L500)).
+Data-plane consequence: more handles per request (one per (D rank, P
+rank) pair), and the per-request done check at level 2 above naturally
+generalizes — a request is done only when *all* of those handles report
+`DONE`.
+
+### Lease management — keeping P's blocks alive
+
+Once P finishes prefill, it must hold those KV blocks until D reads
+them — but how long? The NIXL connector uses a **heartbeat-renewed
+lease**: P grants a short initial lease (default 30s) when prefill
+completes; D periodically sends heartbeats (over NIXL `send_notif`) that
+extend the lease while the request is still queued or in-flight on D. If
+D crashes, the lease expires within seconds and P reclaims the blocks.
+See the dedicated doc: [NIXL KV Cache Lease Renewal](nixl_kv_cache_lease.md).
+
+### How to read the NIXL code
+
+1. [connector.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/connector.py)
+   (~300 lines) — get the dispatcher straight: which `KVConnector`
+   methods route to which half.
+2. [metadata.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py)
+   — read the dataclasses first; the rest of the code becomes much
+   clearer once you've seen `ReqMeta`, `NixlConnectorMetadata`, and
+   `NixlAgentMetadata`.
+3. [scheduler.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/scheduler.py)
+   — `get_num_new_matched_tokens` → `update_state_after_alloc` →
+   `build_connector_meta`, in that order. Skip lease/heartbeat code on
+   first pass.
+4. [worker.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py)
+   — `register_kv_caches` → `_nixl_handshake` → `start_load_kv` →
+   `_read_blocks` → `get_finished` → `_pop_done_transfers`.
+
+---
+
+## 8. Recommended reading order
 
 1. [abstract.py:36-216](../../vllm/v1/executor/abstract.py#L36-L216) — get
    the `collective_rpc` contract straight first.
@@ -949,5 +1194,6 @@ coherent "who finished what" signal.
    [multiproc_executor.py:296-357](../../vllm/v1/executor/multiproc_executor.py#L296-L357)
    (re-read with aggregator in mind).
 10. A concrete PD connector:
-    [nixl_connector.py](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl_connector.py)
-    (NVIDIA NIXL/RDMA, the canonical disagg implementation).
+    [vllm/distributed/kv_transfer/kv_connector/v1/nixl/](../../vllm/distributed/kv_transfer/kv_connector/v1/nixl/)
+    (NVIDIA NIXL/RDMA, the canonical disagg implementation) — see
+    section 7 for a guided tour.

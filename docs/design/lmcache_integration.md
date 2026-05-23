@@ -10,7 +10,7 @@ LMCache is an external KV cache management system that integrates with vLLM thro
 
 ### Connector-Based Abstraction
 
-LMCache plugs into vLLM via the **KV Connector** interface defined in `vllm/distributed/kv_transfer/kv_connector/v1/base.py`. The main entry point is `LMCacheConnectorV1` in `lmcache_connector.py`, which delegates to the core implementation in `lmcache_integration/vllm_v1_adapter.py`.
+LMCache plugs into vLLM via the **KV Connector** interface ([`KVConnectorBase_V1`](../../vllm/distributed/kv_transfer/kv_connector/v1/base.py#L171)) defined in [vllm/distributed/kv_transfer/kv_connector/v1/base.py](../../vllm/distributed/kv_transfer/kv_connector/v1/base.py). The main entry point is [`LMCacheConnectorV1`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L72) in [lmcache_connector.py](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py), which delegates to the core implementation [`LMCacheConnectorV1Impl`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L570) in [lmcache_integration/vllm_v1_adapter.py](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py).
 
 ```
 vLLM Engine
@@ -27,21 +27,22 @@ vLLM Engine
 
 ### Scheduler-Worker Split
 
-The connector has two distinct roles that run in separate processes:
+The connector has two distinct roles (selected via [`KVConnectorRole`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L18) at construction in [lmcache_connector.py:83-113](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L83-L113)) that run in separate processes:
 
-- **Scheduler Role**: Decides *what* to load and save. It queries the LMCache lookup client for prefix hits, creates load/save specifications, and passes metadata to workers.
-- **Worker Role**: Executes *actual data transfers*. It initializes the LMCacheEngine, manages GPU connectors, and performs the physical movement of KV tensors between storage and GPU memory.
+- **Scheduler Role**: Decides *what* to load and save. It queries the LMCache lookup client for prefix hits, creates load/save specifications, and passes metadata to workers. See scheduler-side APIs starting at [vllm_v1_adapter.py:1141](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1141).
+- **Worker Role**: Executes *actual data transfers*. It initializes the LMCacheEngine, manages GPU connectors, and performs the physical movement of KV tensors between storage and GPU memory. See worker-side APIs such as [`start_load_kv`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L798) and [`wait_for_save`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1033).
 
-Communication between the two roles happens via `LMCacheConnectorMetadata`, which is built by the scheduler each engine step and consumed by the worker.
+Communication between the two roles happens via [`LMCacheConnectorMetadata`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L556), which is built by the scheduler each engine step (see [`build_connector_meta`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1296)) and consumed by the worker.
 
 ### Key Source Files
 
 | File | Purpose |
 |------|---------|
-| `kv_connector/v1/lmcache_connector.py` | Public connector entry point |
-| `lmcache_integration/vllm_v1_adapter.py` | Core implementation (~1400 lines) |
-| `lmcache_integration/multi_process_adapter.py` | Multi-process support via ZMQ |
-| `lmcache_integration/utils.py` | Helper utilities |
+| [`kv_connector/v1/lmcache_connector.py`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py) | Public connector entry point ([`LMCacheConnectorV1`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L72)) |
+| [`lmcache_integration/vllm_v1_adapter.py`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py) | Core implementation ([`LMCacheConnectorV1Impl`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L570), ~1400 lines) |
+| [`lmcache_integration/multi_process_adapter.py`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/multi_process_adapter.py) | Multi-process support via ZMQ |
+| [`lmcache_integration/utils.py`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/utils.py) | Helper utilities |
+| [`kv_connector/v1/lmcache_mp_connector.py`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_mp_connector.py) | Alternative multi-process connector variant |
 
 ## Features
 
@@ -88,8 +89,8 @@ LMCache distinguishes prefill and decode requests at multiple levels throughout 
 
 #### Phase Detection
 
-- **`RequestTracker.is_decode_phase`**: Set to `True` when a request is re-scheduled with exactly 1 new token (`len(new_token_ids) == 1`), indicating the transition from prefill to decode. Starts as `False` for new requests.
-- **`ReqMeta.is_last_prefill`**: Set to `True` when all prompt tokens have been scheduled (`input_token_len == tracker.prompt_len`). This marks the final prefill step before decode begins.
+- **[`RequestTracker.is_decode_phase`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L149)**: Set to `True` when a request is re-scheduled with exactly 1 new token (`len(new_token_ids) == 1`) in [`RequestTracker.update`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L244-L245), indicating the transition from prefill to decode. Starts as `False` for new requests.
+- **[`ReqMeta.is_last_prefill`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L258)**: Set to `True` when all prompt tokens have been scheduled (`input_token_len == tracker.prompt_len`) in [`ReqMeta.from_request_tracker`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L295-L297). This marks the final prefill step before decode begins.
 
 #### Behavioral Differences
 
@@ -102,7 +103,7 @@ LMCache distinguishes prefill and decode requests at multiple levels throughout 
 
 #### Save Gating Logic
 
-The `skip_save` decision in `ReqMeta.from_request_tracker()` explicitly checks the phase:
+The `skip_save` decision in [`ReqMeta.from_request_tracker()`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L269) explicitly checks the phase (see [vllm_v1_adapter.py:313-318](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L313-L318)):
 
 ```python
 skip_save = tracker.disagg_spec is None and (
@@ -125,14 +126,14 @@ During chunked prefill (not the last chunk), token counts are always truncated t
 
 In a disaggregated (prefill/decode split) setup, the "store" operation on the prefiller is actually a **remote transfer** to the decoder. This happens incrementally starting from the **first** prefill step, not just the last one. Here is what happens at each stage:
 
-**1. Request arrival (Scheduler — `update_state_after_alloc`):**
-The incoming request carries `kv_transfer_params` with a `disagg_spec` dict containing the decoder's connection info (`receiver_host`, `receiver_init_port`, `receiver_alloc_port`). The scheduler extracts this into a `DisaggSpec` object and stores it in `tmp_disagg_tracker`.
+**1. Request arrival (Scheduler — [`update_state_after_alloc`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1231)):**
+The incoming request carries `kv_transfer_params` with a `disagg_spec` dict containing the decoder's connection info (`receiver_host`, `receiver_init_port`, `receiver_alloc_port`). The scheduler extracts this into a `DisaggSpec` object and stores it in [`tmp_disagg_tracker`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L99) (see [vllm_v1_adapter.py:1249-1264](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1249-L1264)).
 
-**2. Request tracking (Scheduler — `build_connector_meta`):**
-When the `RequestTracker` is created for the new request, the `DisaggSpec` is popped from `tmp_disagg_tracker` and attached to the tracker. It flows through to `ReqMeta` and ultimately into the `LMCacheConnectorMetadata` sent to the worker.
+**2. Request tracking (Scheduler — [`build_connector_meta`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1296)):**
+When the [`RequestTracker`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L121) is created for the new request, the `DisaggSpec` is popped from `tmp_disagg_tracker` and attached to the tracker (see [vllm_v1_adapter.py:191](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L191)). It flows through to [`ReqMeta`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L249) and ultimately into the [`LMCacheConnectorMetadata`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L556) sent to the worker.
 
-**3. Every prefill step (Worker — `wait_for_save`):**
-On each prefill engine step, `wait_for_save()` processes the request:
+**3. Every prefill step (Worker — [`wait_for_save`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1033)):**
+On each prefill engine step, `wait_for_save()` processes the request (see [vllm_v1_adapter.py:1075-1128](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1075-L1128)):
 
 ```
 For a kv_producer with disagg_spec present:
@@ -264,7 +265,7 @@ Prefiller GPU                              Decoder GPU
 
 ### LoadSpec and SaveSpec
 
-These specifications control what the worker does for each request in a given engine step:
+These specifications control what the worker does for each request in a given engine step. Defined at [vllm_v1_adapter.py:71-85](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L71-L85):
 
 ```python
 @dataclass
@@ -281,7 +282,7 @@ class SaveSpec:
 
 ### RequestTracker
 
-Scheduler-side state tracking per request:
+Scheduler-side state tracking per request, defined at [vllm_v1_adapter.py:120-152](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L120-L152). Created via [`from_new_request`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L155) and mutated by [`update`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L214):
 
 ```python
 @dataclass
@@ -327,6 +328,18 @@ Each vLLM engine step follows this sequence, with LMCache hooks at each stage:
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+| Hook | Public entry ([lmcache_connector.py](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py)) | Implementation ([vllm_v1_adapter.py](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py)) |
+|------|-------------|--------------------|
+| `get_num_new_matched_tokens` | [L259](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L259) | [L1141](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1141) |
+| `update_state_after_alloc` | [L281](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L281) | [L1231](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1231) |
+| `build_connector_meta` | [L289](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L289) | [L1296](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1296) |
+| `register_kv_caches` | [L120](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L120) | [L787](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L787) |
+| `start_load_kv` | [L136](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L136) | [L798](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L798) |
+| `wait_for_layer_load` | [L153](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L153) | [L908](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L908) |
+| `save_kv_layer` | [L166](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L166) | [L932](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L932) |
+| `wait_for_save` | [L189](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L189) | [L1033](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1033) |
+| `get_finished` | [L199](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L199) | [L1131](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1131) |
+
 ### Prefill Phase: KV Cache Movement
 
 During prefill, both loading (from LMCache) and saving (to LMCache) occur:
@@ -347,6 +360,8 @@ Scheduler creates LoadSpec:
 Result: Only tokens [t64 ... t99] need prefill computation.
         Tokens [t0 ... t63] will be loaded from LMCache.
 ```
+
+See [`get_num_new_matched_tokens`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1141) for the actual scheduler-side lookup that populates [`load_specs`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1219-L1223).
 
 #### Step 2: KV Loading (Worker — GPU ← Storage)
 
@@ -381,12 +396,14 @@ Data flow (layer-wise mode):
   └─────────────────────────────────┘
 ```
 
+See the load loop in [`start_load_kv`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L836-L889) — it constructs `token_mask` (masking already-cached prefix) and calls either [`retrieve_layer`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L870) (layerwise mode) or [`retrieve`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L882) (non-layerwise).
+
 #### Step 3: Attention + Save (Worker — GPU → Storage)
 
 For each transformer layer, the worker:
-1. Waits for loaded KV to be ready (`wait_for_layer_load`)
+1. Waits for loaded KV to be ready ([`wait_for_layer_load`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L908))
 2. Runs attention over ALL tokens (loaded + freshly computed)
-3. Saves the newly computed KV back to LMCache (`save_kv_layer`)
+3. Saves the newly computed KV back to LMCache ([`save_kv_layer`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L932))
 
 ```
 Layer L attention computation:
@@ -469,7 +486,7 @@ In a disaggregated setup, prefill and decode run on **separate vLLM instances** 
 
 #### DisaggSpec
 
-Each disaggregated request carries a `DisaggSpec` that tells the prefiller where to send KV:
+Each disaggregated request carries a [`DisaggSpec`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L89) that tells the prefiller where to send KV (defined at [vllm_v1_adapter.py:88-96](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L88-L96)):
 
 ```python
 @dataclass
@@ -483,7 +500,7 @@ class DisaggSpec:
     num_transferred_tokens: int  # Tokens transferred so far
 ```
 
-The `DisaggSpec` is extracted from request-level `kv_transfer_params` on the scheduler side and attached to the `RequestTracker`.
+The `DisaggSpec` is extracted from request-level `kv_transfer_params` on the scheduler side in [`update_state_after_alloc`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1249-L1264) and attached to the `RequestTracker` via [`tmp_disagg_tracker.pop`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L191).
 
 #### Prefiller Side (kv_producer)
 
@@ -505,10 +522,12 @@ The prefiller computes KV and sends it to the decoder via NIXL:
       └─ Update disagg_spec.num_transferred_tokens
       └─ Set disagg_spec.is_last_prefill = True on final iteration
 
-4. KV data flows:  Prefiller GPU → NIXL → Decoder GPU
+4. KV data flows:  Prefiller paged GPU → PD staging (GPU or CPU) → NIXL → Decoder PD staging (GPU or CPU) → Decoder paged GPU
 ```
 
-Key behavior: when `disagg_spec` is present, **saving is never skipped** — the skip_save logic is overridden because the KV must always be transferred to the decoder.
+The staging hop in the middle is configurable per-side via `pd_buffer_device` — see [Inside `lmcache_engine.store`: Staging and NIXL Submission](#inside-lmcache_enginestore-staging-and-nixl-submission) below.
+
+Key behavior: when `disagg_spec` is present, **saving is never skipped** — the skip_save logic is overridden because the KV must always be transferred to the decoder. See the `tracker.disagg_spec is None` guard at [vllm_v1_adapter.py:313](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L313) and the `kv_role == "kv_producer"` branch at [vllm_v1_adapter.py:1075-1079](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1075-L1079).
 
 #### Decoder Side (kv_consumer)
 
@@ -529,9 +548,12 @@ The decoder loads KV from the remote prefiller and runs decode:
 
 4. Worker: wait_for_save()
    └─ kv_role == "kv_consumer" → skip save (decoder doesn't store back)
+      (see vllm_v1_adapter.py:1043-1045)
 
 5. Proceed to decode phase with all KV loaded
 ```
+
+The `kv_consumer` early-return is at [vllm_v1_adapter.py:1043-1045](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1043-L1045).
 
 #### Multi-Chunk Prefill
 
@@ -552,7 +574,74 @@ Step 3: Prefill tokens [t512 ... t700]  (last prefill)
   └─ Decoder can begin decoding
 ```
 
+#### Inside `lmcache_engine.store`: Staging and NIXL Submission
+
+The high-level diagrams above show `store(...)` as a single arrow, but inside that one Python call the work splits into two sequential phases — both of which return before any real byte movement finishes.
+
+**Phase A — GPU read into a staging `MemoryObj`** ([cache_engine.py:533-534](../../LMCache/lmcache/v1/cache_engine.py#L533-L534)):
+
+```python
+with store_stats.profile_from_gpu():
+    self.gpu_connector.batched_from_gpu(memory_objs, starts, ends, **kwargs)
+```
+
+This launches a `multi_layer_kv_transfer` CUDA kernel on a dedicated `store_stream` ([gpu_connectors.py:198](../../LMCache/lmcache/v1/gpu_connector/gpu_connectors.py#L198), used at [line 361](../../LMCache/lmcache/v1/gpu_connector/gpu_connectors.py#L361)) that gathers the scattered paged GPU KV into a contiguous chunk-shaped buffer. The Python call returns once the kernel is *launched* (CUDA async), not when bytes have landed.
+
+**Phase B — Hand-off to the storage backend** ([cache_engine.py:540-545](../../LMCache/lmcache/v1/cache_engine.py#L540-L545)):
+
+```python
+with store_stats.profile_put():
+    self.storage_manager.batched_put(
+        keys, memory_objs,
+        transfer_spec=transfer_spec,
+        location=self.store_location,
+    )
+```
+
+`batched_put` walks every active backend and calls its `batched_submit_put_task`. For `LocalCPUBackend` / `LocalDiskBackend` this is a hot-cache insert; for [`PDBackend`](../../LMCache/lmcache/v1/storage_backend/pd_backend_async.py#L1007) it submits a NIXL transfer coroutine onto a dedicated sender event loop via `asyncio.run_coroutine_threadsafe` ([pd_backend_async.py:1041-1050](../../LMCache/lmcache/v1/storage_backend/pd_backend_async.py#L1041-L1050)) and returns immediately — the actual RDMA happens asynchronously on that loop. Decoder-side completion is signaled out-of-band via [`_send_proxy_notif`](../../LMCache/lmcache/v1/storage_backend/pd_backend_async.py#L991), which is why the vLLM-side [`get_finished()`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1131-L1134) returns `(None, None)` — the vLLM scheduler does not track NIXL completion in this design.
+
+The NIXL coroutine must synchronize with `store_stream` before issuing `nixl_xfer` (otherwise stale data would be sent), so the two phases are effectively sequenced; the overlap you get is between this whole pipeline and the *next* engine step's compute, not between the gather and the NIXL send.
+
+##### Where the staging buffer lives: `pd_buffer_device`
+
+In disagg mode (`enable_pd=True`), [`storage_manager._get_allocator_backend`](../../LMCache/lmcache/v1/storage_backend/storage_manager.py#L317-L318) selects `PDBackend` as the allocator, so `memory_obj.tensor` lives in the PD staging buffer. The buffer's device is set per-side by [`pd_buffer_device`](../../LMCache/lmcache/v1/storage_backend/pd_backend_async.py#L370-L374):
+
+| `pd_buffer_device` | `memory_obj.tensor` location | Phase-A kernel kind |
+|---|---|---|
+| `"gpu"` | GPU (NIXL-registered staging) | **D2D** — paged GPU KV → contiguous GPU staging |
+| `"cpu"` | pinned CPU (NIXL-registered staging) | **D2H** — paged GPU KV → pinned CPU staging |
+
+Both sides have independent `pd_buffer_device` settings, giving four valid configurations:
+
+| prefiller | decoder | end-to-end transfer |
+|---|---|---|
+| gpu | gpu | GPU↔GPU RDMA (zero CPU touch) |
+| gpu | cpu | GPU→CPU |
+| cpu | gpu | CPU→GPU |
+| cpu | cpu | CPU↔CPU |
+
+On the decoder, the inverse path runs: NIXL writes incoming bytes into the decoder's PD staging, then [`retrieve`](../../LMCache/lmcache/v1/cache_engine.py) copies them into vLLM's paged GPU cache via `to_gpu` (D2D if decoder staging is GPU, H2D if CPU).
+
+Note: `lmc_ops.TransferDirection.D2H` is just the kernel's semantic label ("read-from-cache" direction). The actual hardware transfer kind is determined by the source/destination tensor devices, not by this enum.
+
+##### Non-disagg path for contrast
+
+When `enable_pd=False`, [`need_gpu_interim_buffer`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L401-L402) returns `True`, so the GPU connector is constructed with `use_gpu=True` and an extra `gpu_buffer`. `from_gpu` then takes its [two-step branch](../../LMCache/lmcache/v1/gpu_connector/gpu_connectors.py#L374-L389): first a D2D gather into the contiguous GPU buffer, then a D2H `copy_` into pinned CPU `memory_obj.tensor` (allocated by [`PinMemoryAllocator`](../../LMCache/lmcache/v1/memory_management.py#L1973)). In disagg mode this two-step is skipped — the gather writes directly into the PD staging buffer.
+
+##### Prefix matching is key-based, not byte-based
+
+Prefix matching never inspects the KV bytes — it only checks whether a chunk's hashed key is present in storage. The key is computed from the token IDs by [`token_database.process_tokens`](../../LMCache/lmcache/v1/token_database.py); the corresponding `MemoryObj` may live on GPU or pinned CPU but [`PDBackend.contains`](../../LMCache/lmcache/v1/storage_backend/pd_backend_async.py#L632-L648) is just `self.data.get(key, None)`. So `pd_buffer_device="gpu"` does not interfere with lookup at all.
+
+Two prefiller-side caveats specific to disagg:
+
+1. The **prefiller does not populate `PDBackend.data`** ([pd_backend_async.py:314-316](../../LMCache/lmcache/v1/storage_backend/pd_backend_async.py#L314-L316)) — the staging slot is reused as soon as NIXL completes. The prefiller's `contains()` always returns `False`.
+2. The **prefiller's scheduler-side lookup short-circuits to 0** for `kv_producer` ([vllm_v1_adapter.py:1158-1161](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1158-L1161)) unless the lookup client advertises `supports_producer_reuse`.
+
+So in a standard disagg deployment, **no prefix matching happens on the prefiller** — neither for its own benefit nor against its own staging buffer. The PD staging is point-to-point hand-off, not a cache. All prefix matching happens on the decoder, where `PDBackend.data` is populated as NIXL transfers arrive. If you want true cross-request prefix reuse on the decoder, configure a `LocalCPUBackend` (or `MaruBackend`) alongside `PDBackend` so retrieved chunks get promoted into a longer-lived tier.
+
 #### Example Deployment
+
+End-to-end example scripts and configs live under [examples/disaggregated/lmcache/disagg_prefill_lmcache_v1/](../../examples/disaggregated/lmcache/disagg_prefill_lmcache_v1/) — see [disagg_vllm_launcher.sh](../../examples/disaggregated/lmcache/disagg_prefill_lmcache_v1/disagg_vllm_launcher.sh) and the [configs/](../../examples/disaggregated/lmcache/disagg_prefill_lmcache_v1/configs/) directory.
 
 ```bash
 # Prefiller instance (kv_producer)
@@ -588,6 +677,8 @@ The prefiller's LMCache config enables NIXL as sender (`nixl_role: "sender"`, `e
 
 ### Summary: Data Flow Diagram
 
+Single-instance / non-disagg path:
+
 ```
                     PREFILL                              DECODE
                     ──────                               ──────
@@ -602,6 +693,27 @@ The prefiller's LMCache config enables NIXL as sender (`nixl_role: "sender"`, `e
    Storage ◀──store─── GPU KV Cache              GPU KV Cache
    (CPU/Disk/           (new tokens only)        (optionally save
     Remote)                                       new decode token)
+```
+
+Disagg path — note the per-side staging hop set by `pd_buffer_device`:
+
+```
+       PREFILLER                                           DECODER
+       ─────────                                           ───────
+
+  paged GPU KV
+       │
+       │ from_gpu (single kernel,
+       ▼  D2D or D2H per pd_buffer_device)
+  PD staging buf  ────── NIXL submit (async) ──────▶  PD staging buf
+  (GPU or CPU)        on dedicated sender loop          (GPU or CPU)
+                                                              │
+                                                              │ retrieve / to_gpu
+                                                              ▼
+                                                       paged GPU KV
+                                                              │
+                                                              ▼
+                                                       decode begins
 ```
 
 ## Configuration
@@ -652,6 +764,10 @@ enable_nixl: false
 | `enable_blending` | false | Blend cached and fresh KV |
 | `enable_nixl` | false | Enable NIXL remote transport |
 | `kv_role` | — | `kv_producer`, `kv_consumer`, or `kv_both` |
+| `enable_pd` | false | Switch to `PDBackend` allocator for disagg; disables the GPU interim buffer in the GPU connector |
+| `pd_buffer_device` | — | Where the PD staging buffer lives: `"gpu"` (NIXL-registered GPU memory, zero CPU touch) or `"cpu"` (pinned host memory). Set independently on prefiller and decoder. |
+| `pd_role` | — | `"sender"` (prefiller) or `"receiver"` (decoder) |
+| `store_location` | None | Restrict `batched_put` to a single backend (e.g. `"PDBackend"` on prefiller so the hot cache isn't also written) |
 ## Why LMCache Disagg Requires All KV Before Decoding
 
 In vLLM's disaggregated prefill/decode architecture, the **NIXL connector** allows the decoder to start processing other requests concurrently while KV is being transferred from the prefiller. The **LMCache connector** does not — the decoder only begins decoding a request after all of its KV cache has been fully transferred. This section explains why.
@@ -677,7 +793,7 @@ LMCache operates at a **cache storage** level. It adds an indirection layer: the
 
 #### 2. Synchronous Retrieve API
 
-LMCache's `start_load_kv()` calls `lmcache_engine.retrieve()`, which is a **blocking** call that copies all KV for the request into GPU pages immediately:
+LMCache's [`start_load_kv()`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L798) calls `lmcache_engine.retrieve()`, which is a **blocking** call that copies all KV for the request into GPU pages immediately (see [vllm_v1_adapter.py:882-889](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L882-L889)):
 
 ```python
 # vllm_v1_adapter.py — start_load_kv()
@@ -691,7 +807,7 @@ ret_token_mask = self.lmcache_engine.retrieve(
 )
 ```
 
-There is no "initiate transfer + poll for completion" pattern. The layerwise mode (`retrieve_layer`) uses a generator for per-layer pipelining but still operates synchronously within the forward pass.
+There is no "initiate transfer + poll for completion" pattern. The layerwise mode ([`retrieve_layer`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L870)) uses a generator for per-layer pipelining but still operates synchronously within the forward pass.
 
 In contrast, NIXL's `start_load_kv()` posts a non-blocking transfer and returns immediately:
 
@@ -704,7 +820,7 @@ def start_load_kv(self, metadata: NixlConnectorMetadata):
 
 #### 3. No Async Completion Tracking
 
-The LMCache connector's `get_finished()` always returns `(None, None)`:
+The LMCache connector's [`get_finished()`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_integration/vllm_v1_adapter.py#L1131) always returns `(None, None)`:
 
 ```python
 # vllm_v1_adapter.py
@@ -714,13 +830,13 @@ def get_finished(
     return None, None
 ```
 
-The scheduler relies on `get_finished()` returning completed request IDs to move requests from `WAITING_FOR_REMOTE_KVS` back to `WAITING` (see `_update_from_kv_xfer_finished()` and `_update_waiting_for_remote_kv()` in `scheduler.py`). Without this, the async scheduling flow is inoperative.
+The scheduler relies on `get_finished()` returning completed request IDs to move requests from `WAITING_FOR_REMOTE_KVS` back to `WAITING` (see [`_update_from_kv_xfer_finished()`](../../vllm/v1/core/sched/scheduler.py#L2160) and [`_update_waiting_for_remote_kv()`](../../vllm/v1/core/sched/scheduler.py#L2093) in [scheduler.py](../../vllm/v1/core/sched/scheduler.py)). Without this, the async scheduling flow is inoperative.
 
 NIXL's worker tracks in-flight transfers in `_recving_transfers` and reports completions through `get_finished()` → `_pop_done_transfers()`.
 
 #### 4. `get_num_new_matched_tokens()` Returns `False` for Async
 
-The second return value of `get_num_new_matched_tokens()` signals whether the KV load will happen asynchronously. LMCache always returns `False`:
+The second return value of [`get_num_new_matched_tokens()`](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L259) signals whether the KV load will happen asynchronously. LMCache always returns `False` (see [lmcache_connector.py:277-279](../../vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector.py#L277-L279)):
 
 ```python
 # lmcache_connector.py
@@ -730,7 +846,7 @@ def get_num_new_matched_tokens(self, request, num_computed_tokens):
     ), False  # ← always synchronous
 ```
 
-When the scheduler sees `False`, it schedules the request immediately into the `RUNNING` state rather than placing it in `WAITING_FOR_REMOTE_KVS`. NIXL returns `True`, which triggers the async path:
+When the scheduler sees `False`, it schedules the request immediately into the `RUNNING` state rather than placing it in `WAITING_FOR_REMOTE_KVS` ([scheduler.py:766](../../vllm/v1/core/sched/scheduler.py#L766)). NIXL returns `True`, which triggers the async path:
 
 ```python
 # scheduler.py
@@ -742,7 +858,7 @@ if load_kv_async:
 
 #### 5. Proxy Serializes the Flow
 
-The LMCache disagg proxy `await`s the prefiller's full response before forwarding to the decoder:
+The LMCache disagg proxy `await`s the prefiller's full response before forwarding to the decoder (see [disagg_proxy_server.py:153-163](../../examples/disaggregated/lmcache/disagg_prefill_lmcache_v1/disagg_proxy_server.py#L153-L163)):
 
 ```python
 # disagg_proxy_server.py
