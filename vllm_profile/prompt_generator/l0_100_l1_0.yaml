@@ -167,6 +167,9 @@ total_count: 360
 # Probability (0.0–1.0) of reusing a descriptive text from history after warmup
 pick_from_hist_pctg: 1
 
+# Whether to randomize the length of the prompt picked from history (between min and max descriptive length).
+rand_hist_len: false
+
 # Output JSON file path
 output_file: "prompts.json"
 

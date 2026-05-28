@@ -55,6 +55,7 @@ class GeneratorConfig:
     output_tokens: int = 100
     hist_range_size: int = 0
     pick_mode: str = "random"
+    rand_hist_len: bool = False
 
 
 def load_config(config_path: str) -> GeneratorConfig:
@@ -175,8 +176,11 @@ def generate_prompts(config: GeneratorConfig) -> List[dict]:
 
                 full = sys_p + desc_p + query_p
                 min_len = len(sys_p)
-                cap = config.max_descriptive_length if config.max_descriptive_length > 0 else len(full)
-                rand_len = random.randint(min_len, min(len(full), cap))
+                cap = (len(sys_p) + config.max_descriptive_length) if config.max_descriptive_length > 0 else len(full)
+                if config.rand_hist_len:
+                    rand_len = random.randint(min_len, min(len(full), cap))
+                else:
+                    rand_len = len(full)
                 truncated = full[:rand_len]
                 prompt = build_prompt("", truncated, "")
                 # Don't add history-picked prompts to history
