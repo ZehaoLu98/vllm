@@ -181,3 +181,6 @@ hist_range_size: 0
 # Pick mode within the history range: "random" or "iterative".
 # "iterative" picks most-recently-inserted first and cycles through the range.
 pick_mode: "iterative"
+
+# Whether to randomize the length of the prompt picked from history (between min and max descriptive length).
+rand_hist_len: false

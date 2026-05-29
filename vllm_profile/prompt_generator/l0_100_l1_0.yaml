@@ -162,7 +162,7 @@ query_length: 0
 warmup_count: 30
 
 # Total number of prompts to generate
-total_count: 360
+total_count: 800
 
 # Probability (0.0–1.0) of reusing a descriptive text from history after warmup
 pick_from_hist_pctg: 1
@@ -171,10 +171,10 @@ pick_from_hist_pctg: 1
 rand_hist_len: false
 
 # Output JSON file path
-output_file: "prompts.json"
+output_file: "l0_100_l1_0.json"
 
 # Number of output tokens per prompt (written into JSONL for vllm benchmark)
-output_tokens: 100
+output_tokens: 1
 
 # History range: limits which history entries can be picked from.
 # hist_range_size: number of most-recent history entries to pick from.
