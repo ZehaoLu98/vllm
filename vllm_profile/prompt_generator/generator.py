@@ -176,7 +176,7 @@ def generate_prompts(config: GeneratorConfig) -> List[dict]:
 
                 full = sys_p + desc_p + query_p
                 min_len = len(sys_p)
-                cap = (len(sys_p) + config.max_descriptive_length) if config.max_descriptive_length > 0 else len(full)
+                cap = (len(sys_p) + config.max_descriptive_length + config.query_length) if config.max_descriptive_length > 0 else len(full)
                 if config.rand_hist_len:
                     rand_len = random.randint(min_len, min(len(full), cap))
                 else:
