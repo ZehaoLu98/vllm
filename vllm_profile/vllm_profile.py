@@ -91,7 +91,7 @@ def main():
         stream_interval=args.stream_interval,
         disable_log_stats=False,
         # kv_transfer_config=ktc,
-        max_model_len=8192,
+        max_model_len=9216,
     )
 
     if enable_builtin_profiling:
