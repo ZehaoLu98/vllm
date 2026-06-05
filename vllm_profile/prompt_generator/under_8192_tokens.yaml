@@ -1,0 +1,32 @@
+# Config: 100 prompts, each under 8192 tokens.
+# Every prompt is freshly generated (pick_from_hist_pctg = 0) so all prompts
+# share the same character length, keeping token counts predictable.
+
+system_prompts:
+  - ""
+
+# No system prompt prefix
+system_prompt_length: 0
+
+# Character length of generated descriptive text (tuned so token count < 8192)
+# ~1.97 chars/token for this random text -> ~6800 chars ≈ 3500 tokens.
+initial_descriptive_length: 6800
+
+# Not used because pick_from_hist_pctg = 0
+max_descriptive_length: 0
+
+# Character length of generated query text
+query_length: 200
+
+# All 100 prompts are freshly generated
+warmup_count: 100
+total_count: 100
+
+# Never reuse from history -> uniform prompt sizes
+pick_from_hist_pctg: 0
+
+output_file: "under_8192_tokens.json"
+output_tokens: 100
+
+hist_range_size: 0
+pick_mode: "random"

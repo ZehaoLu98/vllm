@@ -13,7 +13,7 @@ enable_builtin_profiling = False
 
 # Load prompts from external file
 # You can override the prompts file path by setting VLLM_PROMPTS_FILE environment variable
-prompts_file = os.environ.get('VLLM_PROMPTS_FILE', get_default_prompts_path())
+prompts_file = os.environ.get('VLLM_PROMPTS_FILE', os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_generator", "under_8192_tokens.txt"))
 prompts = load_prompts(prompts_file)
 
 # Create a sampling params object.
@@ -68,7 +68,7 @@ def main():
 
     # Create an LLM with SchedulerConfig parameters
     llm = LLM(
-        model="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        model="openai/gpt-oss-120b",
         tensor_parallel_size=1,
         pipeline_parallel_size=1,
         profiler_config=profiler_config,
@@ -90,7 +90,8 @@ def main():
         async_scheduling=args.async_scheduling,
         stream_interval=args.stream_interval,
         disable_log_stats=False,
-        kv_transfer_config=ktc,
+        # kv_transfer_config=ktc,
+        max_model_len=8192,
     )
 
     if enable_builtin_profiling:

@@ -36,13 +36,14 @@ def load_prompts_from_json(file_path: str) -> List[str]:
     return prompts
 
 
-def load_prompts_from_text(file_path: str, delimiter: str = "\n---\n") -> List[str]:
+def load_prompts_from_text(file_path: str, delimiter: str = "\n") -> List[str]:
     """
     Load prompts from a text file.
     
     Args:
         file_path: Path to the text file containing prompts
-        delimiter: String delimiter separating prompts (default: "\\n---\\n")
+        delimiter: String delimiter separating prompts (default: "\\n", i.e.
+            one prompt per line, matching the generator's .txt output)
         
     Returns:
         List of prompt strings
