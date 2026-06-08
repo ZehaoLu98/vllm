@@ -159,19 +159,19 @@ max_descriptive_length: 512
 query_length: 0
 
 # Number of initial prompts that always generate new descriptive text (building history)
-warmup_count: 96
+warmup_count: 30
 
 # Total number of prompts to generate
-total_count: 96
+total_count: 30
 
 # Probability (0.0–1.0) of reusing a descriptive text from history after warmup
 pick_from_hist_pctg: 1
 
 # Output JSON file path
-output_file: "./gpt_oss_120b/random_512_512.json"
+output_file: "./gpt_oss_120b/random_512_8192.json"
 
 # Number of output tokens per prompt (written into JSONL for vllm benchmark)
-output_tokens: 512
+output_tokens: 8192
 
 # History range: limits which history entries can be picked from.
 # hist_range_size: number of most-recent history entries to pick from.

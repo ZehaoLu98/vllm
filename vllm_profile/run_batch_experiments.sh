@@ -5,11 +5,16 @@
 # Bash script to run vllm_profile with multiple batch sizes
 
 # Define batch sizes array (max_num_seqs values)
-BATCH_SIZES=(1024)
+BATCH_SIZES=(4 8 16 32 48)
 
 # Define max_num_batched_tokens configurations
 # Values can be integers or suffixed strings like "32k"
-MAX_NUM_BATCHED_TOKENS_CONFIGS=("8k" "12k" "16k" "32k" "64k" "128k" "256k" "512k" "1024k")
+MAX_NUM_BATCHED_TOKENS_CONFIGS=("100k")
+
+# Define prompts file configurations
+# Each entry is a path to a prompts file that is passed to vllm_profile.py
+# through the VLLM_PROMPTS_FILE environment variable
+PROMPTS_CONFIGS=("./prompt_generator/gpt_oss_120b/random_512_512.txt" "./prompt_generator/gpt_oss_120b/random_8192_512.txt" "./prompt_generator/gpt_oss_120b/random_512_8192.txt")
 
 # Output directory for logs
 OUTPUT_DIR="./experiment_results"
@@ -26,6 +31,7 @@ echo "Timestamp: $TIMESTAMP"
 echo "Output directory: $EXPERIMENT_DIR"
 echo "Batch sizes: ${BATCH_SIZES[@]}"
 echo "MAX_NUM_BATCHED_TOKENS configs: ${MAX_NUM_BATCHED_TOKENS_CONFIGS[@]}"
+echo "Prompts configs: ${PROMPTS_CONFIGS[@]}"
 echo "=========================================="
 echo ""
 
@@ -45,7 +51,7 @@ echo ""
 # SCHEDULING_POLICY="fcfs"
 
 # Enable chunked prefill: "true", "false", or "none"
-ENABLE_CHUNKED_PREFILL="true"
+ENABLE_CHUNKED_PREFILL="false"
 
 # Disable chunked multimodal input (flag, set to "true" to enable)
 # DISABLE_CHUNKED_MM_INPUT="true"
@@ -71,13 +77,17 @@ for batch_size in "${BATCH_SIZES[@]}"; do
 
     # Loop through each MAX_NUM_BATCHED_TOKENS configuration
     for max_batched_tokens in "${MAX_NUM_BATCHED_TOKENS_CONFIGS[@]}"; do
+
+      # Loop through each prompts file configuration
+      for prompts_file in "${PROMPTS_CONFIGS[@]}"; do
         echo "------------------------------------------"
-        echo "Running: batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens"
+        echo "Running: batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens, prompts_file=$prompts_file"
         echo "------------------------------------------"
 
-        # Create output file for this run (sanitize max_batched_tokens for filename)
+        # Create output file for this run (sanitize values for filename)
         SANITIZED_TOKENS=$(echo "$max_batched_tokens" | tr -d ' /')
-        OUTPUT_FILE="$EXPERIMENT_DIR/batch_${batch_size}_tokens_${SANITIZED_TOKENS}_output.log"
+        SANITIZED_PROMPTS=$(basename "$prompts_file" | tr -d ' /')
+        OUTPUT_FILE="$EXPERIMENT_DIR/batch_${batch_size}_tokens_${SANITIZED_TOKENS}_prompts_${SANITIZED_PROMPTS}_output.log"
 
         # Build the command
         CMD="python vllm_profile.py --max_num_seqs $batch_size"
@@ -129,26 +139,27 @@ for batch_size in "${BATCH_SIZES[@]}"; do
         fi
 
         # Print command
-        echo "Command: $CMD"
+        echo "Command: VLLM_PROMPTS_FILE=$prompts_file $CMD"
         echo "Output: $OUTPUT_FILE"
         echo ""
 
         # Run the command and save output
-        $CMD 2>&1 | tee "$OUTPUT_FILE"
+        VLLM_PROMPTS_FILE="$prompts_file" $CMD 2>&1 | tee "$OUTPUT_FILE"
 
         # Check exit status
-        if [ $? -eq 0 ]; then
+        if [ ${PIPESTATUS[0]} -eq 0 ]; then
             echo ""
-            echo "✓ Config (batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens) completed successfully"
+            echo "✓ Config (batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens, prompts_file=$prompts_file) completed successfully"
         else
             echo ""
-            echo "✗ Config (batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens) failed"
+            echo "✗ Config (batch_size=$batch_size, max_num_batched_tokens=$max_batched_tokens, prompts_file=$prompts_file) failed"
         fi
 
         echo ""
         echo "Waiting 5 seconds before next run..."
         sleep 5
         echo ""
+      done
     done
     echo ""
 done
@@ -165,6 +176,7 @@ echo "==================" >> "$SUMMARY_FILE"
 echo "Timestamp: $TIMESTAMP" >> "$SUMMARY_FILE"
 echo "Batch sizes tested: ${BATCH_SIZES[@]}" >> "$SUMMARY_FILE"
 echo "MAX_NUM_BATCHED_TOKENS configs tested: ${MAX_NUM_BATCHED_TOKENS_CONFIGS[@]}" >> "$SUMMARY_FILE"
+echo "Prompts configs tested: ${PROMPTS_CONFIGS[@]}" >> "$SUMMARY_FILE"
 echo "" >> "$SUMMARY_FILE"
 echo "Optional Parameters Used:" >> "$SUMMARY_FILE"
 echo "-------------------------" >> "$SUMMARY_FILE"

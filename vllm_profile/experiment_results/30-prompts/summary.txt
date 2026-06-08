@@ -1,0 +1,30 @@
+Experiment Summary
+==================
+Timestamp: 20260608_212602
+Batch sizes tested: 1 4 8 16 32 48
+MAX_NUM_BATCHED_TOKENS configs tested: 100k
+Prompts configs tested: ./prompt_generator/gpt_oss_120b/random_512_512.txt ./prompt_generator/gpt_oss_120b/random_8192_512.txt ./prompt_generator/gpt_oss_120b/random_512_8192.txt
+
+Optional Parameters Used:
+-------------------------
+  ENABLE_CHUNKED_PREFILL: false
+
+Output files:
+-rw-rw-r-- 1 ubuntu ubuntu 16K Jun  8 22:30 ./experiment_results/experiment_20260608_212602/batch_16_tokens_100k_prompts_random_512_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 15K Jun  8 22:35 ./experiment_results/experiment_20260608_212602/batch_16_tokens_100k_prompts_random_512_8192.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 19K Jun  8 22:33 ./experiment_results/experiment_20260608_212602/batch_16_tokens_100k_prompts_random_8192_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 34K Jun  8 21:40 ./experiment_results/experiment_20260608_212602/batch_1_tokens_100k_prompts_random_512_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 31K Jun  8 22:06 ./experiment_results/experiment_20260608_212602/batch_1_tokens_100k_prompts_random_512_8192.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 35K Jun  8 21:55 ./experiment_results/experiment_20260608_212602/batch_1_tokens_100k_prompts_random_8192_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 15K Jun  8 22:36 ./experiment_results/experiment_20260608_212602/batch_32_tokens_100k_prompts_random_512_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 15K Jun  8 22:40 ./experiment_results/experiment_20260608_212602/batch_32_tokens_100k_prompts_random_512_8192.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 19K Jun  8 22:39 ./experiment_results/experiment_20260608_212602/batch_32_tokens_100k_prompts_random_8192_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 15K Jun  8 22:42 ./experiment_results/experiment_20260608_212602/batch_48_tokens_100k_prompts_random_512_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 15K Jun  8 22:46 ./experiment_results/experiment_20260608_212602/batch_48_tokens_100k_prompts_random_512_8192.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 19K Jun  8 22:45 ./experiment_results/experiment_20260608_212602/batch_48_tokens_100k_prompts_random_8192_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 21K Jun  8 22:11 ./experiment_results/experiment_20260608_212602/batch_4_tokens_100k_prompts_random_512_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 21K Jun  8 22:19 ./experiment_results/experiment_20260608_212602/batch_4_tokens_100k_prompts_random_512_8192.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 21K Jun  8 22:15 ./experiment_results/experiment_20260608_212602/batch_4_tokens_100k_prompts_random_8192_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 18K Jun  8 22:22 ./experiment_results/experiment_20260608_212602/batch_8_tokens_100k_prompts_random_512_512.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 18K Jun  8 22:28 ./experiment_results/experiment_20260608_212602/batch_8_tokens_100k_prompts_random_512_8192.txt_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 19K Jun  8 22:25 ./experiment_results/experiment_20260608_212602/batch_8_tokens_100k_prompts_random_8192_512.txt_output.log

@@ -7,7 +7,7 @@ separating prompt data from the main script logic.
 
 import json
 import os
-from typing import List, Union
+from typing import List, Tuple, Union
 
 
 def load_prompts_from_json(file_path: str) -> List[str]:
@@ -94,6 +94,69 @@ def load_prompts(file_path: str, file_type: str = "auto") -> List[str]:
         return load_prompts_from_text(file_path)
     else:
         raise ValueError(f"Unsupported file type: {file_type}. Use 'json', 'text', or 'auto'.")
+
+
+def load_prompts_with_output_tokens(
+    file_path: str,
+    default_output_tokens: int = 512,
+) -> Tuple[List[str], List[int]]:
+    """
+    Load prompts together with their per-prompt ``output_tokens``.
+
+    Supports:
+    - ``.jsonl``: one JSON object per line, each with a ``"prompt"`` key and an
+      optional ``"output_tokens"`` key.
+    - ``.json``: an array of strings, or an array of objects with ``"prompt"``
+      and optional ``"output_tokens"``.
+    - ``.txt`` (or anything else): one prompt per line; ``output_tokens`` falls
+      back to ``default_output_tokens`` for every prompt.
+
+    Args:
+        file_path: Path to the prompts file.
+        default_output_tokens: Value used when a prompt has no ``output_tokens``.
+
+    Returns:
+        A tuple ``(prompts, output_tokens)`` where both lists have equal length.
+
+    Raises:
+        FileNotFoundError: If the file doesn't exist.
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Prompt file not found: {file_path}")
+
+    prompts: List[str] = []
+    output_tokens: List[int] = []
+
+    def _append(prompt: str, tokens: Union[int, None]) -> None:
+        prompts.append(prompt)
+        output_tokens.append(int(tokens) if tokens is not None else default_output_tokens)
+
+    if file_path.endswith(".jsonl"):
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                _append(obj["prompt"], obj.get("output_tokens"))
+        return prompts, output_tokens
+
+    if file_path.endswith(".json"):
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            raise ValueError("JSON file must contain an array of prompts")
+        for item in data:
+            if isinstance(item, str):
+                _append(item, None)
+            else:
+                _append(item["prompt"], item.get("output_tokens"))
+        return prompts, output_tokens
+
+    # Fall back to plain text: one prompt per line, default output_tokens.
+    for prompt in load_prompts_from_text(file_path):
+        _append(prompt, None)
+    return prompts, output_tokens
 
 
 def get_default_prompts_path() -> str:

@@ -159,10 +159,10 @@ max_descriptive_length: 8192
 query_length: 0
 
 # Number of initial prompts that always generate new descriptive text (building history)
-warmup_count: 30
+warmup_count: 96
 
 # Total number of prompts to generate
-total_count: 30
+total_count: 96
 
 # Probability (0.0–1.0) of reusing a descriptive text from history after warmup
 pick_from_hist_pctg: 1

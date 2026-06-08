@@ -5,19 +5,41 @@ import time
 import os
 
 from vllm import LLM, SamplingParams
-from prompt_loader import load_prompts, get_default_prompts_path
+from prompt_loader import load_prompts_with_output_tokens, get_default_prompts_path
 from util import parse_human_readable_int, parse_args
 from vllm.config import KVTransferConfig
 
 enable_builtin_profiling = False
 
+# Default output length used when a prompt file does not specify `output_tokens`.
+DEFAULT_OUTPUT_TOKENS = 512
+
+fixed_length_enabled = True
+
 # Load prompts from external file
 # You can override the prompts file path by setting VLLM_PROMPTS_FILE environment variable
 prompts_file = os.environ.get('VLLM_PROMPTS_FILE', os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_generator", "under_8192_tokens.txt"))
-prompts = load_prompts(prompts_file)
+prompts, output_tokens = load_prompts_with_output_tokens(
+    prompts_file, default_output_tokens=DEFAULT_OUTPUT_TOKENS
+)
 
-# Create a sampling params object.
-sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=512)
+if(fixed_length_enabled):
+    # Create one sampling params object per prompt so each request generates exactly
+    # its own `output_tokens` tokens.
+    # ignore_eos + min_tokens == max_tokens == output_tokens forces every request to
+    # generate exactly `output_tokens` output tokens (the EOS token is ignored).
+    sampling_params = [
+        SamplingParams(
+            temperature=0.8,
+            top_p=0.95,
+            max_tokens=n,
+            min_tokens=n,
+            ignore_eos=True,
+        )
+        for n in output_tokens
+    ]
+else:
+    assert(False)
 
 
 def main():
