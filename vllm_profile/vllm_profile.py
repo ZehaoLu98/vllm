@@ -129,6 +129,7 @@ def main():
     # Calculate metrics
     ttfts = []
     tpots = []
+    gen_tokens = []
 
     for output in outputs:
         ttft = output.metrics.first_token_latency
@@ -136,6 +137,7 @@ def main():
         decode_time = output.metrics.last_token_ts - output.metrics.first_token_ts
         tpot = decode_time / (output.metrics.num_generation_tokens - 1)
         tpots.append(tpot)
+        gen_tokens.append(output.metrics.num_generation_tokens)
 
     # Print the outputs.
     # print("-" * 50)
@@ -165,6 +167,14 @@ def main():
         print(f"  Max:     {max(tpots):.4f} seconds")
     else:
         print(f"\nTime Per Output Token (TPOT): No data available")
+
+if gen_tokens:
+        print(f"\nNumber of Generation Tokens:")
+        print(f"  Average: {sum(gen_tokens) / len(gen_tokens):.4f} tokens")
+        print(f"  Min:     {min(gen_tokens)} tokens")
+        print(f"  Max:     {max(gen_tokens)} tokens")
+    else:
+        print(f"\nNumber of Generation Tokens: No data available")
 
     print("=" * 80)
     print()
