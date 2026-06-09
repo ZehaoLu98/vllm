@@ -18,7 +18,7 @@ fixed_length_enabled = True
 
 # Load prompts from external file
 # You can override the prompts file path by setting VLLM_PROMPTS_FILE environment variable
-prompts_file = os.environ.get('VLLM_PROMPTS_FILE', os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_generator", "under_8192_tokens.txt"))
+prompts_file = os.environ.get('VLLM_PROMPTS_FILE')
 prompts, output_tokens = load_prompts_with_output_tokens(
     prompts_file, default_output_tokens=DEFAULT_OUTPUT_TOKENS
 )

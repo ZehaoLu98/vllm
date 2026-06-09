@@ -6,7 +6,7 @@ This directory contains the vLLM profiling script with prompts separated into an
 
 - **vllm_profile.py**: Main profiling script
 - **prompt_loader.py**: Module for loading prompts from external files
-- **prompts.json**: Default prompt file containing all test prompts
+- **prompts.jsonl**: Default prompt file containing all test prompts
 - **run_batch_experiments.sh**: Batch experiment runner script
 
 ## Usage
@@ -25,29 +25,21 @@ You can use custom prompts by either:
 
 1. **Setting an environment variable:**
    ```bash
-   export VLLM_PROMPTS_FILE=/path/to/your/prompts.json
+  export VLLM_PROMPTS_FILE=/path/to/your/prompts.jsonl
    python vllm_profile.py
    ```
 
-2. **Creating prompts in different formats:**
+2. **Providing a JSONL prompt file:**
 
-   **JSON format (prompts.json):**
-   ```json
-   [
-     "First prompt text here",
-     "Second prompt text here",
-     "Third prompt text here"
-   ]
-   ```
+  **JSONL format (prompts.jsonl):**
+  ```json
+  {"prompt":"First prompt text here","output_tokens":100}
+  {"prompt":"Second prompt text here","output_tokens":256}
+  {"prompt":"Third prompt text here"}
+  ```
 
-   **Text format (prompts.txt):**
-   ```
-   First prompt text here
-   ---
-   Second prompt text here
-   ---
-   Third prompt text here
-   ```
+  - `prompt` is required.
+  - `output_tokens` is optional; when omitted, the profiler uses its default value.
 
 ### Prompt Loader API
 
@@ -59,34 +51,30 @@ from prompt_loader import load_prompts, get_default_prompts_path
 # Load prompts from default location
 prompts = load_prompts(get_default_prompts_path())
 
-# Load prompts from custom JSON file
-prompts = load_prompts("my_prompts.json")
+# Load prompts from custom JSONL file
+prompts = load_prompts("my_prompts.jsonl")
 
-# Load prompts from text file
-prompts = load_prompts("my_prompts.txt")
-
-# Auto-detect file format
-prompts = load_prompts("prompts_file", file_type="auto")
+# Explicit JSONL type is also supported
+prompts = load_prompts("my_prompts.jsonl", file_type="jsonl")
 ```
 
 #### Function Reference
 
 - **`load_prompts(file_path, file_type="auto")`**: Load prompts from a file
   - `file_path`: Path to the prompt file
-  - `file_type`: "json", "text", or "auto" (default: "auto")
+  - `file_type`: "jsonl" or "auto" (default: "auto")
   - Returns: List of prompt strings
 
-- **`load_prompts_from_json(file_path)`**: Load prompts from JSON file
-  - `file_path`: Path to JSON file containing an array of prompts
+- **`load_prompts_from_jsonl(file_path)`**: Load prompts from JSONL file
+  - `file_path`: Path to JSONL file containing one object per line
   - Returns: List of prompt strings
 
-- **`load_prompts_from_text(file_path, delimiter="\n---\n")`**: Load prompts from text file
-  - `file_path`: Path to text file
-  - `delimiter`: String separating prompts (default: "\n---\n")
-  - Returns: List of prompt strings
+- **`load_prompts_with_output_tokens(file_path, default_output_tokens=512)`**:
+  Load prompts and per-prompt output token counts from JSONL
+  - Returns: Tuple `(prompts, output_tokens)`
 
-- **`get_default_prompts_path()`**: Get path to default prompts.json
-  - Returns: Absolute path to prompts.json in the module directory
+- **`get_default_prompts_path()`**: Get path to default prompts.jsonl
+  - Returns: Absolute path to prompts.jsonl in the module directory
 
 ## Benefits of Separated Prompts
 
@@ -98,20 +86,18 @@ prompts = load_prompts("prompts_file", file_type="auto")
 
 ## Example: Creating Custom Prompt Set
 
-Create a file `my_custom_prompts.json`:
+Create a file `my_custom_prompts.jsonl`:
 
 ```json
-[
-  "Explain how transformers work in machine learning.",
-  "Describe the attention mechanism in neural networks.",
-  "What are the benefits of using GPU acceleration for deep learning?"
-]
+{"prompt":"Explain how transformers work in machine learning.","output_tokens":128}
+{"prompt":"Describe the attention mechanism in neural networks.","output_tokens":128}
+{"prompt":"What are the benefits of using GPU acceleration for deep learning?"}
 ```
 
 Use it:
 
 ```bash
-export VLLM_PROMPTS_FILE=my_custom_prompts.json
+export VLLM_PROMPTS_FILE=my_custom_prompts.jsonl
 python vllm_profile.py
 ```
 
@@ -131,7 +117,7 @@ See `python vllm_profile.py --help` for all available options.
 
 ## Notes
 
-- The default `prompts.json` contains 63 comprehensive prompts focused on GPU/CUDA optimization topics
+- The default `prompts.jsonl` contains comprehensive prompts focused on GPU/CUDA optimization topics
 - Prompts are loaded once at script startup
-- Invalid JSON or missing files will raise appropriate errors with helpful messages
+- Only `.jsonl` prompt files are supported; `.json` and `.txt` files are rejected with explicit errors
 - For production use, consider creating prompt sets tailored to your specific use case

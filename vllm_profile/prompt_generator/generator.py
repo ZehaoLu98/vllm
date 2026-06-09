@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prompt generator that produces prompts in JSON format.
+"""Prompt generator that produces prompts in JSONL format.
 
 Each prompt consists of:
   - A system prompt (picked from a configured list)
@@ -17,7 +17,7 @@ Configuration file (YAML) example:
   warmup_count: 50
   total_count: 500
   pick_from_hist_pctg: 0.3
-  output_file: "prompts.json"
+    output_file: "prompts.jsonl"
   hist_range_size: 0           # number of most-recent history entries to pick from; 0 means whole history
   pick_mode: "random"          # "random" or "iterative" (iterative picks most-recent first)
 
@@ -51,7 +51,7 @@ class GeneratorConfig:
     warmup_count: int = 50
     total_count: int = 500
     pick_from_hist_pctg: float = 0.3
-    output_file: str = "prompts.json"
+    output_file: str = "prompts.jsonl"
     output_tokens: int = 100
     hist_range_size: int = 0
     pick_mode: str = "random"
@@ -197,16 +197,12 @@ def generate_prompts(config: GeneratorConfig) -> List[dict]:
 
 
 def write_prompts(prompts: List[dict], output_file: str, output_tokens: int) -> None:
-    """Write the list of prompts to a JSON file and a JSONL file."""
-    path = Path(output_file)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Write prompts to a JSONL file for vllm bench serve custom dataset."""
+    jsonl_path = Path(output_file)
+    if jsonl_path.suffix != ".jsonl":
+        jsonl_path = jsonl_path.with_suffix(".jsonl")
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(path, "w") as f:
-        json.dump(prompts, f, indent=2)
-    print(f"Wrote {len(prompts)} prompts to {path}")
-
-    # Write JSONL file for vllm bench serve --dataset-name custom
-    jsonl_path = path.with_suffix(".jsonl")
     with open(jsonl_path, "w") as f:
         for p in prompts:
             line = p["system_prompt"] + p["descriptive_text"] + p["query"]
@@ -218,7 +214,7 @@ def write_prompts(prompts: List[dict], output_file: str, output_tokens: int) -> 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate prompts and write them to a JSON file."
+        description="Generate prompts and write them to a JSONL file."
     )
     parser.add_argument(
         "--config",
@@ -231,13 +227,6 @@ def main() -> None:
     config = load_config(args.config)
     prompts = generate_prompts(config)
     write_prompts(prompts, config.output_file, config.output_tokens)
-
-    # Write raw text file: one line per prompt, concatenating all three parts
-    raw_path = Path(config.output_file).with_suffix(".txt")
-    with open(raw_path, "w") as f:
-        for p in prompts:
-            f.write(p["system_prompt"] + p["descriptive_text"] + p["query"] + "\n")
-    print(f"Wrote {len(prompts)} raw prompts to {raw_path}")
 
 
 if __name__ == "__main__":
