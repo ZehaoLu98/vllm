@@ -1,0 +1,24 @@
+Experiment Summary
+==================
+Timestamp: 20260612_184624
+Batch sizes tested: 48
+MAX_NUM_BATCHED_TOKENS configs tested: 128k
+Prompts configs tested: ./prompt_generator/gpt_oss_20b/random_2000_2000_n4.jsonl ./prompt_generator/gpt_oss_20b/random_2000_2000_n8.jsonl ./prompt_generator/gpt_oss_20b/random_2000_2000_n16.jsonl ./prompt_generator/gpt_oss_20b/random_2000_2000_n32.jsonl ./prompt_generator/gpt_oss_20b/random_2000_2000_n48.jsonl ./prompt_generator/gpt_oss_20b/random_32000_2000_n4.jsonl ./prompt_generator/gpt_oss_20b/random_32000_2000_n8.jsonl ./prompt_generator/gpt_oss_20b/random_32000_2000_n16.jsonl ./prompt_generator/gpt_oss_20b/random_32000_2000_n32.jsonl ./prompt_generator/gpt_oss_20b/random_32000_2000_n48.jsonl
+
+Optional Parameters Used:
+-------------------------
+  ENABLE_CHUNKED_PREFILL: false
+  VLLM_LOGGING_LEVEL: DEBUG
+  ASYNC_SCHEDULING: false
+
+Output files:
+-rw-rw-r-- 1 ubuntu ubuntu 840K Jun 12 18:53 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_2000_2000_n16.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 840K Jun 12 18:55 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_2000_2000_n32.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 838K Jun 12 18:48 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_2000_2000_n4.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 840K Jun 12 18:57 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_2000_2000_n48.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 838K Jun 12 18:50 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_2000_2000_n8.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 841K Jun 12 19:05 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_32000_2000_n16.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 842K Jun 12 19:08 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_32000_2000_n32.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 838K Jun 12 19:00 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_32000_2000_n4.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 843K Jun 12 19:11 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_32000_2000_n48.jsonl_output.log
+-rw-rw-r-- 1 ubuntu ubuntu 838K Jun 12 19:02 ./experiment_results/experiment_20260612_184624/batch_48_tokens_128k_prompts_random_32000_2000_n8.jsonl_output.log

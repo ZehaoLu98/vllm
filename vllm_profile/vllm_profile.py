@@ -90,7 +90,7 @@ def main():
 
     # Create an LLM with SchedulerConfig parameters
     llm = LLM(
-        model="openai/gpt-oss-120b",
+        model="openai/gpt-oss-20b",
         tensor_parallel_size=1,
         pipeline_parallel_size=1,
         profiler_config=profiler_config,
@@ -113,7 +113,7 @@ def main():
         stream_interval=args.stream_interval,
         disable_log_stats=False,
         # kv_transfer_config=ktc,
-        max_model_len=9216,
+        # max_model_len=9216,
     )
 
     if enable_builtin_profiling:
@@ -168,7 +168,7 @@ def main():
     else:
         print(f"\nTime Per Output Token (TPOT): No data available")
 
-if gen_tokens:
+    if gen_tokens:
         print(f"\nNumber of Generation Tokens:")
         print(f"  Average: {sum(gen_tokens) / len(gen_tokens):.4f} tokens")
         print(f"  Min:     {min(gen_tokens)} tokens")

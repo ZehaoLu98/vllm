@@ -5,16 +5,27 @@
 # Bash script to run vllm_profile with multiple batch sizes
 
 # Define batch sizes array (max_num_seqs values)
-BATCH_SIZES=(4 8 16 32 48)
+BATCH_SIZES=(48)
 
 # Define max_num_batched_tokens configurations
 # Values can be integers or suffixed strings like "32k"
-MAX_NUM_BATCHED_TOKENS_CONFIGS=("100k")
+MAX_NUM_BATCHED_TOKENS_CONFIGS=("128k")
 
 # Define prompts file configurations
 # Each entry is a path to a prompts file that is passed to vllm_profile.py
 # through the VLLM_PROMPTS_FILE environment variable
-PROMPTS_CONFIGS=("./prompt_generator/gpt_oss_120b/random_512_512.txt" "./prompt_generator/gpt_oss_120b/random_8192_512.txt" "./prompt_generator/gpt_oss_120b/random_512_8192.txt")
+PROMPTS_CONFIGS=(
+    "./prompt_generator/gpt_oss_20b/random_2000_2000_n4.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_2000_2000_n8.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_2000_2000_n16.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_2000_2000_n32.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_2000_2000_n48.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_32000_2000_n4.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_32000_2000_n8.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_32000_2000_n16.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_32000_2000_n32.jsonl"
+    "./prompt_generator/gpt_oss_20b/random_32000_2000_n48.jsonl"
+)
 
 # Output directory for logs
 OUTPUT_DIR="./experiment_results"
@@ -53,6 +64,9 @@ echo ""
 # Enable chunked prefill: "true", "false", or "none"
 ENABLE_CHUNKED_PREFILL="false"
 
+# vLLM logging level: "DEBUG", "INFO", "WARNING", "ERROR", etc.
+VLLM_LOGGING_LEVEL="DEBUG"
+
 # Disable chunked multimodal input (flag, set to "true" to enable)
 # DISABLE_CHUNKED_MM_INPUT="true"
 
@@ -63,7 +77,7 @@ ENABLE_CHUNKED_PREFILL="false"
 # DISABLE_HYBRID_KV_CACHE_MANAGER="none"
 
 # Async scheduling: "true", "false", or "none"
-# ASYNC_SCHEDULING="none"
+ASYNC_SCHEDULING="false"
 
 # Stream interval (buffer size for streaming in terms of token length)
 # STREAM_INTERVAL=1
@@ -139,12 +153,12 @@ for batch_size in "${BATCH_SIZES[@]}"; do
         fi
 
         # Print command
-        echo "Command: VLLM_PROMPTS_FILE=$prompts_file $CMD"
+        echo "Command: VLLM_LOGGING_LEVEL=$VLLM_LOGGING_LEVEL VLLM_PROMPTS_FILE=$prompts_file $CMD"
         echo "Output: $OUTPUT_FILE"
         echo ""
 
         # Run the command and save output
-        VLLM_PROMPTS_FILE="$prompts_file" $CMD 2>&1 | tee "$OUTPUT_FILE"
+        VLLM_LOGGING_LEVEL="$VLLM_LOGGING_LEVEL" VLLM_PROMPTS_FILE="$prompts_file" $CMD 2>&1 | tee "$OUTPUT_FILE"
 
         # Check exit status
         if [ ${PIPESTATUS[0]} -eq 0 ]; then
@@ -185,6 +199,7 @@ echo "-------------------------" >> "$SUMMARY_FILE"
 [ ! -z "$LONG_PREFILL_TOKEN_THRESHOLD" ] && echo "  LONG_PREFILL_TOKEN_THRESHOLD: $LONG_PREFILL_TOKEN_THRESHOLD" >> "$SUMMARY_FILE"
 [ ! -z "$SCHEDULING_POLICY" ] && echo "  SCHEDULING_POLICY: $SCHEDULING_POLICY" >> "$SUMMARY_FILE"
 [ ! -z "$ENABLE_CHUNKED_PREFILL" ] && echo "  ENABLE_CHUNKED_PREFILL: $ENABLE_CHUNKED_PREFILL" >> "$SUMMARY_FILE"
+[ ! -z "$VLLM_LOGGING_LEVEL" ] && echo "  VLLM_LOGGING_LEVEL: $VLLM_LOGGING_LEVEL" >> "$SUMMARY_FILE"
 [ ! -z "$DISABLE_CHUNKED_MM_INPUT" ] && echo "  DISABLE_CHUNKED_MM_INPUT: $DISABLE_CHUNKED_MM_INPUT" >> "$SUMMARY_FILE"
 [ ! -z "$SCHEDULER_CLS" ] && echo "  SCHEDULER_CLS: $SCHEDULER_CLS" >> "$SUMMARY_FILE"
 [ ! -z "$DISABLE_HYBRID_KV_CACHE_MANAGER" ] && echo "  DISABLE_HYBRID_KV_CACHE_MANAGER: $DISABLE_HYBRID_KV_CACHE_MANAGER" >> "$SUMMARY_FILE"
