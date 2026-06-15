@@ -179,6 +179,17 @@ def main():
     print("=" * 80)
     print()
 
+    # Print all the collected TTFTs and TPOTs for each request
+    print("Detailed Metrics for Each Request:")
+    print("=" * 80)
+    for i, output in enumerate(outputs):
+        ttft = output.metrics.first_token_latency
+        decode_time = output.metrics.last_token_ts - output.metrics.first_token_ts
+        tpot = decode_time / (output.metrics.num_generation_tokens - 1) if output.metrics.num_generation_tokens > 1 else 0.0
+        print(f"Request {i + 1}: TTFT = {ttft:.4f}s, TPOT = {tpot:.4f}s")
+    print("=" * 80)
+    print()
+
     # Add a buffer to wait for profiler in the background process
     # (in case MP is on) to finish writing profiling output.
     time.sleep(10)
